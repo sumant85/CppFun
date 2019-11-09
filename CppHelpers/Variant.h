@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <array>
+
 namespace sh {
 // Can be improved using
 // https://ldionne.com/2015/11/29/efficient-parameter-pack-Idxing/
@@ -124,18 +126,18 @@ public:
         return typeIdx_;
     }
     
-    Variant() noexcept(std::is_nothrow_default_constructible_v<TypeAt<0, Ts...>>) {
+    constexpr Variant() noexcept(std::is_nothrow_default_constructible_v<TypeAt<0, Ts...>>) {
         using T = TypeAt<0, Ts...>;
         init<T>();
     }
     
-    Variant(const Variant& other) noexcept(NTCC) {
+    constexpr Variant(const Variant& other) noexcept(NTCC) {
         visit([&](const auto& v) {
             init(v);
         }, other);
     }
     
-    Variant(Variant&& other) noexcept(NTMC) {
+    constexpr Variant(Variant&& other) noexcept(NTMC) {
         visit([&](auto&& v) {
             init(std::move(v));
         }, other);
@@ -143,19 +145,19 @@ public:
     
     // TODO: The use of noexcept here is a hammer, we can do it per-type
     template <typename T, typename = IsInPack_t<std::decay_t<T>, Ts...>>
-    Variant& operator=(T&& val) noexcept(NTA) {
+    constexpr Variant& operator=(T&& val) noexcept(NTA) {
         destroy();
         init<T>(std::forward<T>(val));
         return *this;
     }
     
-    Variant& operator=(const Variant& other) noexcept(NTCA) {
+    constexpr Variant& operator=(const Variant& other) noexcept(NTCA) {
         Variant tmp{other};
         std::swap(*this, tmp);
         return *this;
     }
     
-    Variant& operator=(Variant&& other) noexcept(NTMA) {
+    constexpr Variant& operator=(Variant&& other) noexcept(NTMA) {
         // Note that using swap here will cause infinite recursion since
         // swap internally uses move assignment
         destroy();
@@ -170,25 +172,25 @@ public:
     }
     
     template <std::size_t Idx, typename ReturnType = TypeAt<Idx, Ts...>>
-    const ReturnType& getAt() const noexcept {
+    constexpr const ReturnType& getAt() const noexcept {
         return reinterpret_cast<const ReturnType&>(storage_);
     }
     
     // Calling get() with the wrong type is UB, the std equivalent throws and exception
     // but we avoid that penalty and leave it up to the caller
     template <typename Element>
-    Element& get() noexcept {
+    constexpr Element& get() noexcept {
         static_assert(IsInPack_v<Element, Ts...>);
         return reinterpret_cast<Element&>(storage_);
     }
     
     template <typename Element>
-    const Element& get() const noexcept {
+    constexpr const Element& get() const noexcept {
         return reinterpret_cast<const Element&>(storage_);
     }
     
     template <typename Element, typename = IsInPack_t<Element, Ts...>>
-    Element* getIf() noexcept {
+    constexpr Element* getIf() noexcept {
         if (Index_v<Element, Ts...> == typeIdx_) {
             return reinterpret_cast<Element*>(&storage_);
         }
@@ -196,7 +198,7 @@ public:
     }
     
     template <typename Element, typename = IsInPack_t<Element, Ts...>>
-    const Element* getIf() const noexcept {
+    constexpr const Element* getIf() const noexcept {
         if (Index_v<Element, Ts...> == typeIdx_) {
             return reinterpret_cast<const Element*>(&storage_);
         }
@@ -216,21 +218,11 @@ private:
     static constexpr auto NTMA = std::conjunction_v<std::is_nothrow_move_assignable<Ts>...>;
     static constexpr auto NTA = NTCA && NTMA;
     
-    using Deleter = void (*)(void*) noexcept(NTD);
-    template <typename T>
-    static Deleter getDeleter() {
-        if (std::is_trivially_destructible_v<T>) {
-            return [](void *) noexcept(NTD) {};
-        }
-        return [](void * ptr) noexcept(NTD) { static_cast<T*>(ptr)->~T(); };
-    }
-    
     template <typename T>
     void init(T&& element) {
         using D = std::decay_t<T>;
         typeIdx_ = Index_v<D, Ts...>;
         new (&storage_) D(std::forward<T>(element));
-        deleter_ = getDeleter<D>();
     }
     
     template <typename T, typename... Args>
@@ -238,21 +230,27 @@ private:
         using D = std::decay_t<T>;
         typeIdx_ = Index_v<D, Ts...>;
         new (&storage_) D(std::forward<Args>(args)...);
-        deleter_ = getDeleter<D>();
     }
     
     void destroy() noexcept(NTD) {
-        assert(deleter_);
-        deleter_(&storage_);
+        // The alternative to this approach is to store a deleter function pointer as a member
+        // variable. The drawback is that we pay for memory for each variant instantiaion at runtime.
+        // Drawback with current approach is larger binary size due to this static array of function
+        // pointers.
+        using Deleter = void (*)(Storage&) noexcept(NTD);
+        static const std::array<Deleter, Count> deleters {
+            [](Storage& storage) noexcept(NTD) {
+                if constexpr (!std::is_trivially_destructible_v<Ts>) {
+                    reinterpret_cast<Ts*>(&storage)->~Ts();
+                }
+            }...,
+        };
+        deleters[typeIdx_](storage_);
     }
     
-    std::aligned_storage_t<MaxElementSize<Ts...>(), MaxAlignment<Ts...>()> storage_;
+    using Storage = std::aligned_storage_t<MaxElementSize<Ts...>(), MaxAlignment<Ts...>()>;
+    Storage storage_;
     IdxType typeIdx_ = Count;
-    
-    // We pay for storing an extra deleter member variable but save runtime cost
-    // to peform the actual lookup on the type on destruction. The additional
-    // storage is sizeof(void*)
-    Deleter deleter_ = nullptr;
 };
 
 // This will be somewhat of a binary bloat for variants with a large pack
@@ -273,26 +271,6 @@ struct VisitHelper {
         }
     }
 };
-    
-//template<typename R, typename Visitor, typename Var, typename... Ts>
-//struct VisitHelperFPtrs_table {
-//    static R run(Visitor&& visitor, Var&& v, const Variant<Ts...> *) {
-//        constexpr static R (*visitTable[std::decay_t<Var>::Count])(Visitor&&, Var&&) {
-//            [](Visitor&& vi, Var&& var) { return vi(var.template get<Ts>()); }...
-//        };
-//
-//        return visitTable[v.getIndex()](std::forward<Visitor>(visitor), std::forward<Var>(v));
-//    }
-//};
-//
-//template <typename Visitor, typename Variant, std::size_t>
-//struct VisitHelperFPtrs {
-//    static decltype(auto) run(Visitor&& visitor, Variant&& v) {
-//        using R = decltype(visitor(v.template getAt<0>()));
-//        return VisitHelperFPtrs_table<R, Visitor, Variant>::run(
-//                std::forward<Visitor>(visitor), std::forward<Variant>(v), &v);
-//    }
-//};
 
 template <typename Visitor, typename Variant>
 auto visit(Visitor&& visitor, Variant&& v) -> decltype(visitor(get<0>(std::forward<Variant>(v)))) {

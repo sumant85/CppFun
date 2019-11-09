@@ -196,8 +196,7 @@ TEST_CASE("Visiting variants ", "[Variant]") {
         }, var);
 
         REQUIRE(ptr == nullptr);
-        auto newPtr = var.getIf<std::shared_ptr<int>>();
-        REQUIRE(newPtr);
+        REQUIRE(*var.get<std::shared_ptr<int>>() == 1);
     }
 }
 
