@@ -9,6 +9,8 @@
 #pragma once
 
 #include <array>
+#include <type_traits>
+#include <utility>
 
 namespace sh {
 // Can be improved using
@@ -113,7 +115,6 @@ public:
         init<Idx>(std::forward<Args>(args)...);
     }
     
-    // TODO: Simplify these noexcepts :|
     template <IdxType Idx, typename U, typename... Args>
     constexpr Variant(std::in_place_index_t<Idx>, std::initializer_list<U> il, Args&&... args)
     noexcept(std::is_nothrow_constructible_v<TypeAt<Idx, Ts...>, std::initializer_list<U>, Args...>) {
@@ -230,16 +231,13 @@ private:
         // The alternative to this approach is to store a deleter function pointer as a member
         // variable. The drawback is that we pay for memory for each variant instantiaion at runtime.
         // Drawback with current approach is larger binary size due to this static array of function
-        // pointers.
-        using Deleter = void (*)(Storage&) noexcept(NTD);
-        static const std::array<Deleter, Count> deleters {
-            [](Storage& storage) noexcept(NTD) {
-                if constexpr (!std::is_trivially_destructible_v<Ts>) {
-                    reinterpret_cast<Ts*>(&storage)->~Ts();
-                }
-            }...,
-        };
-        deleters[typeIdx_](storage_);
+        // pointers, but smaller footprint.
+        visit([](auto& val) noexcept(std::is_nothrow_destructible_v<std::decay_t<decltype(val)>>) {
+            using D = std::decay_t<decltype(val)>;
+            if constexpr (!std::is_trivially_destructible_v<D>) {
+                val.~D();
+            }
+        }, *this);
     }
     
     using Storage = std::aligned_storage_t<MaxElementSize<Ts...>(), MaxAlignment<Ts...>()>;
@@ -247,11 +245,38 @@ private:
     IdxType typeIdx_ = Count;
 };
 
-// This will be somewhat of a binary bloat for variants with a large pack
-// An alternative is to statically construct an array of function pointers for each
-// visit instantiation and just directly index into that array
-template<typename Visitor, typename Variant, std::size_t Index>
+// TODO: noexcepts for visit
+template<typename Visitor, typename Variant, bool UseLookupVisitor>
 struct VisitHelper {
+    static decltype(auto) run(Visitor&& visitor, Variant&& v) {
+        if constexpr (UseLookupVisitor) {
+            using IdxSeq = std::make_index_sequence<std::decay_t<Variant>::Count>;
+            return run(std::forward<Visitor>(visitor), std::forward<Variant>(v), IdxSeq{});
+        } else {
+            return run<0>(std::forward<Visitor>(visitor), std::forward<Variant>(v));
+        }
+    }
+    
+    // Here, we statically store a lookup table of function pointers to call for visits. In cases
+    // where the index is not known compile time, this method is more efficient since we can
+    // directly lookup to make the call (although there is a penalty of accessing cold memory)
+    // Also, we introduce an extra function in-direction.
+    template <std::size_t... Idx>
+    static decltype(auto) run(Visitor&& visitor, Variant&& v, std::index_sequence<Idx ...>) {
+        using RetType = decltype(visitor(get<0>(std::forward<Variant>(v))));
+        using VisitFn = RetType (*)(Visitor&&, Variant&&);
+        static const std::array<VisitFn, sizeof...(Idx)> lookup = {
+            [](Visitor&& visitor, Variant&& v) -> RetType {
+                return visitor(std::forward<Variant>(v).template getAt<Idx>());
+            }...,
+        };
+        return lookup[v.getIndex()](std::forward<Visitor>(visitor), std::forward<Variant>(v));
+    }
+    
+    // This will be somewhat of a binary bloat for variants with a large pack, but where the
+    // compiler knows index at compile time, it can easily collapse all the function calls
+    // into the final direct call
+    template <size_t Index>
     static decltype(auto) run(Visitor&& visitor, Variant&& v) {
         if constexpr (std::decay_t<Variant>::Count == Index) {
             // If variant is empty, return default initialized type at index 0
@@ -260,7 +285,7 @@ struct VisitHelper {
             if (v.getIndex() == Index) {
                 return visitor(std::forward<Variant>(v).template getAt<Index>());
             } else {
-                return VisitHelper<Visitor, Variant, Index + 1>::run(std::forward<Visitor>(visitor), std::forward<Variant>(v));
+                return run<Index + 1>(std::forward<Visitor>(visitor), std::forward<Variant>(v));
             }
         }
     }
@@ -268,9 +293,10 @@ struct VisitHelper {
 
 template <typename Visitor, typename Variant>
 auto visit(Visitor&& visitor, Variant&& v) -> decltype(visitor(get<0>(std::forward<Variant>(v)))) {
-    return VisitHelper<Visitor, Variant, 0>::run(std::forward<Visitor>(visitor), std::forward<Variant>(v));
+    static constexpr auto UseLookupVisitor = true;
+    return VisitHelper<Visitor, Variant, UseLookupVisitor>::run(std::forward<Visitor>(visitor), std::forward<Variant>(v));
 }
-    
+
 template <typename... Ts>
 struct Overloaded : Ts... { using Ts::operator()...; };
 

@@ -27,6 +27,10 @@ struct CopyThrows {
     CopyThrows(CopyThrows&&) = delete;
 };
 
+struct DestrThrows {
+    ~DestrThrows() noexcept(false) { throw 1; }
+};
+
 struct NonMovableNonCopyable : public sh::NonMovable, public sh::NonCopyable {};
 
 constexpr auto str = "hello world";
@@ -34,23 +38,31 @@ constexpr auto str = "hello world";
 
 TEST_CASE("noexcept correctness ", "[Variant]") {
     using V = sh::Variant<int, char, float>;
-    static_assert(std::is_nothrow_move_constructible_v<V>, "");
-    static_assert(std::is_nothrow_copy_constructible_v<V>, "");
+    static_assert(std::is_nothrow_move_constructible_v<V>);
+    static_assert(std::is_nothrow_copy_constructible_v<V>);
+    static_assert(std::is_nothrow_destructible_v<V>);
 
     using V1 = sh::Variant<int, char, MoveThrows>;
-    static_assert(!std::is_nothrow_move_constructible_v<V1>, "");
+    static_assert(!std::is_nothrow_move_constructible_v<V1>);
+    static_assert(std::is_nothrow_destructible_v<V1>);
 
     using V2 = sh::Variant<int, char, CopyThrows>;
-    static_assert(!std::is_nothrow_copy_constructible_v<V2>, "");
+    static_assert(!std::is_nothrow_copy_constructible_v<V2>);
 
-    static_assert(noexcept(std::swap(std::declval<V&>(), std::declval<V&>())), "");
-    static_assert(!noexcept(std::swap(std::declval<V1&>(), std::declval<V1&>())), "");
+    static_assert(noexcept(std::swap(std::declval<V&>(), std::declval<V&>())));
+    static_assert(!noexcept(std::swap(std::declval<V1&>(), std::declval<V1&>())));
+    
+    using V3 = sh::Variant<int, DestrThrows>;
+    static_assert(!std::is_nothrow_destructible_v<V3>);
 }
 
 TEST_CASE("Constructing variants ", "[Variant]") {
     SECTION("Default construction") {
         sh::Variant<int, float, double, bool> var;
         REQUIRE(var.getIndex() == 0);
+        
+        sh::Variant<NonMovableNonCopyable, std::string, bool> var1;
+        REQUIRE(var1.getIndex() == 0);
     }
 
     SECTION("Type Deduction") {
@@ -59,58 +71,91 @@ TEST_CASE("Constructing variants ", "[Variant]") {
         
         sh::Variant<int, float, double, bool> var2{2.0};
         REQUIRE(var2.getIndex() == 2);
+        
+        struct TakesInt {
+            TakesInt(int a) : val(a) {}
+            int val;
+        };
+        SECTION("Choose direct type over constructible types") {
+            sh::Variant<TakesInt, int> var{10};
+            REQUIRE(var.getIndex() == 1);
+        }
+        SECTION("Choose first constructible type when no direct match") {
+            sh::Variant<TakesInt, int> var1{10.0};
+            REQUIRE(var1.getIndex() == 0);
+        }
     }
 
     SECTION("Using type index") {
-        sh::Variant<int, float, double, bool> var(std::in_place_index<2>, 2.0);
-        REQUIRE(var.getIndex() == 2);
-        REQUIRE(*var.getIf<double>() == 2.0);
-        REQUIRE(var.get<double>() == 2.0);
-    }
-
-    SECTION("Complex types using type index (including initializer list)") {
         constexpr auto str = "hello world";
-        sh::Variant<std::vector<int>, std::string, bool> var1(std::in_place_index<1>, str);
+        using V = sh::Variant<std::vector<int>, std::string, float>;
+        V var1(std::in_place_index<1>, str);
         REQUIRE(var1.get<std::string>() == str);
 
-        sh::Variant<std::vector<int>, std::string, bool> var2(std::in_place_index<0>, {1, 2, 3, 4});
+        V var2(std::in_place_index<0>, {1, 2, 3, 4});
         auto& res = *var2.getIf<std::vector<int>>();
         REQUIRE(res.size() == 4);
         auto idx = 1;
         std::for_each(res.begin(), res.end(), [&](int val) { REQUIRE(val == idx++); });
         
-        sh::Variant<NonMovableNonCopyable, std::string, bool> var3;
-        REQUIRE(var3.getIndex() == 0);
-
+        V var3(std::in_place_index<2>, 10); // int -> float conversion
+        REQUIRE(var3.getIndex() == 2);
+        REQUIRE(var3.getAt<2>() == 10.f);
+        
         sh::Variant<std::string, NonMovableNonCopyable> var4(std::in_place_index<1>);
         REQUIRE(var4.getIndex() == 1);
     }
     
-    SECTION("Variants preserve index on move and assign") {
-        using V = sh::Variant<bool, int, std::string, int>;
-        V var(std::in_place_index<3>, 10);
-        REQUIRE(var.getIndex() == 3);
-        
-        auto copy = var;
-        REQUIRE(copy.getIndex() == 3);
-        REQUIRE(copy.getAt<3>() == 10);
-        
-        auto move = std::move(var);
-        REQUIRE(move.getIndex() == 3);
-        REQUIRE(move.getAt<3>() == 10);
-    }
-    
     SECTION("Copy and move construction") {
-        using V = sh::Variant<bool, std::shared_ptr<bool>, int>;
+        using V = sh::Variant<bool, std::shared_ptr<bool>, int, std::shared_ptr<bool>>;
         auto ptr = std::make_shared<bool>(true);
-        V var(std::in_place_index<1>, ptr);
+        V var(std::in_place_index<3>, ptr);
         REQUIRE(ptr.use_count() == 2);
         
         auto copy = var;
         REQUIRE(ptr.use_count() == 3);
+        SECTION("Variants preserve index on copy construction") {
+            REQUIRE(copy.getIndex() == 3);
+        }
         
         auto move = std::move(var);
         REQUIRE(ptr.use_count() == 3); // one in copy, one in move, one in ptr
+        SECTION("Variants preserve index on move construction") {
+            REQUIRE(move.getIndex() == 3);
+        }
+        
+        SECTION("Variants choose first possible index on assignment") {
+            V var = std::make_shared<bool>(true);
+            REQUIRE(var.getIndex() == 1);
+        }
+    }
+}
+
+TEST_CASE("Destructing variants ", "[Variant]") {
+    SECTION("Ensure non-trivial object is destroyed") {
+        auto ptr = std::make_shared<bool>(true);
+        std::weak_ptr<bool> wPtr = ptr;
+        {
+            sh::Variant<bool, std::shared_ptr<bool>, int> var(std::move(ptr));
+            REQUIRE(wPtr.use_count() == 1);
+        }
+        REQUIRE(wPtr.expired());
+    }
+    
+    SECTION("Throwing destructors") {
+        SECTION("Doesn't throw") {
+            sh::Variant<int, DestrThrows> v(10);
+        }
+        
+        SECTION("Doesn't terminate") {
+            bool threw = false;
+            try {
+                sh::Variant<int, DestrThrows> v{DestrThrows()};
+            } catch(...) {
+                threw = true;
+            }
+            REQUIRE(threw);
+        }
     }
 }
 
@@ -125,22 +170,16 @@ TEST_CASE("Assigning to variants ", "[Variant]") {
     }
 
     SECTION("Move assign") {
-        std::weak_ptr<int> wPtr;
         {
             sh::Variant<std::shared_ptr<int>> var1(std::make_shared<int>(1));
             sh::Variant<std::shared_ptr<int>> var2;
             var2 = std::move(var1);
             SECTION("Internal object is destroyed on move") {
-                REQUIRE(var1.get<std::shared_ptr<int>>() == nullptr);
+                REQUIRE(var1.get<std::shared_ptr<int>>().use_count() == 0);
             }
             REQUIRE(var2.get<std::shared_ptr<int>>().use_count() == 1);
             REQUIRE(*var2.get<std::shared_ptr<int>>() == 1);
-            
-            wPtr = var2.get<std::shared_ptr<int>>();
-            REQUIRE(wPtr.use_count() > 0);
         }
-        
-        REQUIRE(wPtr.use_count() == 0);
     }
     
     SECTION("Variants preserve index on move and assign") {
@@ -154,7 +193,7 @@ TEST_CASE("Assigning to variants ", "[Variant]") {
         REQUIRE(copy.getAt<3>() == 10);
         
         V move;
-            move = std::move(var);
+        move = std::move(var);
         REQUIRE(move.getIndex() == 3);
         REQUIRE(move.getAt<3>() == 10);
     }
@@ -266,7 +305,17 @@ TEST_CASE("Using get ", "[Variant]") {
 TEST_CASE("Gotchas ", "[Variant]") {
     SECTION("Explicit conversions") {
         using V = sh::Variant<bool, std::string>;
+        // It's possible to special case for char and string types, but should I?...
         V var("hello");
         REQUIRE(var.getIndex() == 0); // Should ideally be 1, but we end up picking bool
+    }
+    
+    SECTION("Give preference to non-narrowing") {
+        struct TakesDouble {
+            TakesDouble(double a) : val(a) {}
+            double val;
+        };
+        sh::Variant<int, TakesDouble> var2{10.0};
+        REQUIRE(var2.getIndex() == 0); // Should ideally be 1
     }
 }
