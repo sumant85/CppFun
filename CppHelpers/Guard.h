@@ -61,26 +61,20 @@ public:
 };
     
 template <typename T>
-constexpr int SizeInBytes() {
+constexpr size_t SizeInBytes() {
     using D = std::decay_t<T>;
     return sizeof(D);
 }
-    
-template <typename T>
-constexpr bool IsTrivialGuardCallable() {
-    using D = std::decay_t<T>;
-    return alignof(void*) % alignof(D) == 0 && std::is_trivially_destructible_v<D>;
-}
 
-// This class acts as a container for a callable that is trivially
-// destructible so that we can store it in a type-erased container.
-// This saves binary size by avoiding multiple instantiations of the
-// template for each target.
-template <int SizeInBytes>
-class TrivialGuard : public GuardBase, NonCopyable, NonMovable {
+// This class acts as a container for a callable that is stored in a type-erased container.
+// This saves binary size by avoiding multiple instantiations of the template for each target.
+// The requirement is that the target's operator() should be noexcept because that allows us
+// to destroy the type-erased target without leaks.
+template <size_t SizeInBytes, size_t Alignment>
+class Guard : public GuardBase, NonCopyable, NonMovable {
 public:
     template <typename Target, typename = std::enable_if_t<!std::is_lvalue_reference_v<Target>>>
-    TrivialGuard(Target&& t) {
+    Guard(Target&& t) {
         using D = std::decay_t<Target>;
         new (&storage_) D(std::forward<Target>(t));
         // The trampoline mustn't have any captures since otherwise we cannot cast
@@ -88,59 +82,42 @@ public:
         // std::fuction member variable which causes a large code bloat (due to vtables
         // and other template instantiations)
         // Also note how we remember D using the trampoline
-        trampoline_ = [](void * ptr) { (*static_cast<D*>(ptr))(); };
+        trampoline_ = [](void * ptr) noexcept(true) {
+            auto& target = *static_cast<D*>(ptr);
+            target();
+            target.~D();
+        };
         static_assert(noexcept(t()), "Cannot create guard with a target that can throw");
     }
     
-    ~TrivialGuard() {
-        trampoline_(&storage_);
-    }
-    
-    void dismiss() override final {
-        trampoline_ = [](void *) {};
-    }
-    
-private:
-    void(*trampoline_)(void *);
-    std::aligned_storage<SizeInBytes, alignof(void*)> storage_;
-};
-    
-template <typename T>
-TrivialGuard(T&& t)->TrivialGuard<SizeInBytes<T>()>;
-  
-// For use cases where we cannot use the trivial guard above, we resort to
-// instantiating a template for the target (which leads to code bloat)
-template<typename Target>
-class Guard : public GuardBase, NonCopyable, NonMovable {
-public:
-    constexpr Guard(Target&& target) : target_(std::move(target)), active_(true) {
-        static_assert(noexcept(target()), "Cannot create guard with a target that can throw");
-    }
-    
     ~Guard() {
-        if (active_) {
-            target_();
+        if (trampoline_) {
+            trampoline_(&storage_);
         }
     }
     
     void dismiss() override final {
-        active_ = false;
+        // This decision needs more thought. On one hand, we require an unnecessary if check in ~Guard.
+        // The other option is to say trampoline_ = [](void *) {}; // ie no-op
+        // In that case, a dismissed guard has to pay for a much more expensive function call to
+        // the trampoline. The reason we chose to use if in ~Guard is that if dismiss is
+        // uncommon, then the branch predictor would be accurate most of the time, otherwise
+        // dismiss is common and we save the cost of jumping to cold memory for dismissed guards.
+        trampoline_ = nullptr;
     }
     
 private:
-    Target target_;
-    bool active_;
+    void(*trampoline_)(void *);
+    std::aligned_storage<SizeInBytes, Alignment> storage_;
 };
+    
+template <typename T>
+Guard(T&& t)->Guard<SizeInBytes<T>(), alignof(T)>;
   
 using GuardKey = std::unique_ptr<GuardBase>;
 
 template <typename T>
 auto makeGuard(T&& target) {
-    using D = std::decay_t<T>;
-    if constexpr (IsTrivialGuardCallable<D>()) {
-        return GuardKey(new TrivialGuard(std::forward<T>(target)));
-    } else {
-        return GuardKey(new Guard<D>(std::forward<T>(target)));
-    }
+    return GuardKey(new Guard(std::forward<T>(target)));
 }
 }

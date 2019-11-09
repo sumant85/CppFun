@@ -45,6 +45,17 @@ TEST_CASE("Guard created on stack", "[StackGuard]") {
         REQUIRE(val == 2);
     }
     
+    SECTION("throwing guard executes, and doesn't leak") {
+        auto ptr = std::make_shared<int>(10);
+        try {
+            auto guard = sh::StackGuard([ptr = ptr]() {
+                REQUIRE(ptr.use_count() == 2);
+                throw std::runtime_error("");
+            });
+        } catch (std::exception&) {}
+        REQUIRE(ptr.use_count() == 1);
+    }
+    
     SECTION("dismissable guard") {
         int val = 1;
         {
@@ -83,74 +94,77 @@ TEST_CASE("Guard created on heap", "[GuardBase]") {
         bool b;
     };
     
-    SECTION("Trivial guard") {
-        int valA = 1;
-        int valB = 2;
-        Holder h;
-        h.guard = sh::makeGuard([&]() noexcept(true) {
-            valA = 2;
-            valB = 3;
-        });
-        REQUIRE(valA == 1);
-        REQUIRE(valB == 2);
+    SECTION("Guard key executes") {
+        SECTION("With lambda") {
+            int valA = 1;
+            int valB = 2;
+            Holder h;
+            h.guard = sh::makeGuard([&]() noexcept(true) {
+                valA = 2;
+                valB = 3;
+            });
+            
+            REQUIRE(valA == 1);
+            REQUIRE(valB == 2);
+            h.guard = nullptr;
+            REQUIRE(valA == 2);
+            REQUIRE(valB == 3);
+        }
         
-        auto& ref = *h.guard;
-        // Capturing 2 refs, so lambda should should be of 2 * size(void*)
-        REQUIRE(typeid(ref) == typeid(sh::TrivialGuard<2 * sizeof(void*)>));
-        
-        h = {};
-        REQUIRE(valA == 2);
-        REQUIRE(valB == 3);
-        
-        TrivialFunctor functor;
-        h.guard = sh::makeGuard(std::move(functor));
-        ref = *h.guard;
-        REQUIRE(typeid(ref) == typeid(sh::TrivialGuard<sh::SizeInBytes<TrivialFunctor>()>));
+        SECTION("With functor") {
+            NonTrivialFunctor functor;
+            auto ptr = std::make_shared<bool>(true);
+            functor.member = ptr;
+            
+            Holder h;
+            h.guard = sh::makeGuard(std::move(functor));
+            
+            REQUIRE(*ptr == true);
+            h.guard = nullptr;
+            REQUIRE(*ptr == false);
+        }
     }
     
-    SECTION("Non-trivial guard") {
-        NonTrivialFunctor functor;
-        auto ptr = std::make_shared<bool>(true);
-        functor.member = ptr;
+    SECTION("Guard key can be dismissed") {
+        SECTION("Non-trivial functor") {
+            NonTrivialFunctor functor;
+            auto ptr = std::make_shared<bool>(true);
+            functor.member = ptr;
+            
+            Holder h;
+            h.guard = sh::makeGuard(std::move(functor));
+
+            h.guard->dismiss();
+            REQUIRE(*ptr == true);
+            h = {};
+            REQUIRE(*ptr == true);
+        }
         
-        Holder h;
-        h.guard = sh::makeGuard(std::move(functor));
-        auto& ref = *h.guard;
-        REQUIRE(typeid(ref) == typeid(sh::Guard<NonTrivialFunctor>));
-        
-        h = {};
-        REQUIRE(*ptr == false);
+        SECTION("Trivial functor") {
+            TrivialFunctor functor;
+            functor.a = 0;
+            functor.b = false;
+            
+            Holder h;
+            h.guard = sh::makeGuard(std::move(functor));
+            
+            h.guard->dismiss();
+            h = {};
+            REQUIRE(functor.a == 0);
+            REQUIRE(functor.b == false);
+        }
     }
     
-    SECTION("Non-trivial guard dismissed") {
-        NonTrivialFunctor functor;
-        auto ptr = std::make_shared<bool>(true);
-        functor.member = ptr;
+    SECTION("Target is deallocated") {
+        auto owner = std::make_shared<int>(10);
+        std::weak_ptr<int> weakPtr = owner;
+        auto target = [ptr = std::move(owner)]() noexcept(true) {};
         
         Holder h;
-        h.guard = sh::makeGuard(std::move(functor));
-        auto& ref = *h.guard;
-        REQUIRE(typeid(ref) == typeid(sh::Guard<NonTrivialFunctor>));
-        
-        h.guard->dismiss();
-        h = {};
-        REQUIRE(*ptr == true);
-    }
-    
-    SECTION("Trivial guard dismissed") {
-        TrivialFunctor functor;
-        functor.a = 0;
-        functor.b = false;
-        
-        Holder h;
-        h.guard = sh::makeGuard(std::move(functor));
-        auto& ref = *h.guard;
-        REQUIRE(typeid(ref) == typeid(sh::TrivialGuard<sizeof(TrivialFunctor)>));
-        
-        h.guard->dismiss();
-        h = {};
-        REQUIRE(functor.a == 0);
-        REQUIRE(functor.b == false);
+        h.guard = sh::makeGuard(std::move(target));
+        REQUIRE(weakPtr.use_count() == 1);
+        h.guard = nullptr;
+        REQUIRE(weakPtr.use_count() == 0);
     }
 }
 
