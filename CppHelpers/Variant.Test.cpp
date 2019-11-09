@@ -78,21 +78,48 @@ TEST_CASE("Constructing variants ", "[Variant]") {
         REQUIRE(res.size() == 4);
         auto idx = 1;
         std::for_each(res.begin(), res.end(), [&](int val) { REQUIRE(val == idx++); });
+        
+        sh::Variant<NonMovableNonCopyable, std::string, bool> var3;
+        REQUIRE(var3.getIndex() == 0);
+
+        sh::Variant<std::string, NonMovableNonCopyable> var4(std::in_place_index<1>);
+        REQUIRE(var4.getIndex() == 1);
     }
-
-    SECTION("Check peculiar types") {
-        sh::Variant<NonMovableNonCopyable, std::string, bool> var;
-        REQUIRE(var.getIndex() == 0);
-
-        sh::Variant<std::string, NonMovableNonCopyable> var1(std::in_place_index<1>);
-        REQUIRE(var1.getIndex() == 1);
+    
+    SECTION("Variants preserve index on move and assign") {
+        using V = sh::Variant<bool, int, std::string, int>;
+        V var(std::in_place_index<3>, 10);
+        REQUIRE(var.getIndex() == 3);
+        
+        auto copy = var;
+        REQUIRE(copy.getIndex() == 3);
+        REQUIRE(copy.getAt<3>() == 10);
+        
+        auto move = std::move(var);
+        REQUIRE(move.getIndex() == 3);
+        REQUIRE(move.getAt<3>() == 10);
+    }
+    
+    SECTION("Copy and move construction") {
+        using V = sh::Variant<bool, std::shared_ptr<bool>, int>;
+        auto ptr = std::make_shared<bool>(true);
+        V var(std::in_place_index<1>, ptr);
+        REQUIRE(ptr.use_count() == 2);
+        
+        auto copy = var;
+        REQUIRE(ptr.use_count() == 3);
+        
+        auto move = std::move(var);
+        REQUIRE(ptr.use_count() == 3); // one in copy, one in move, one in ptr
     }
 }
 
 TEST_CASE("Assigning to variants ", "[Variant]") {
     SECTION("Copy assign") {
         sh::Variant<std::shared_ptr<int>> var1(std::make_shared<int>(1));
-        auto var2 = var1;
+        sh::Variant<std::shared_ptr<int>> var2;
+
+        var2 = var1;
         REQUIRE(var1.get<std::shared_ptr<int>>().use_count() == 2);
         REQUIRE(var2.get<std::shared_ptr<int>>().use_count() == 2);
     }
@@ -101,18 +128,35 @@ TEST_CASE("Assigning to variants ", "[Variant]") {
         std::weak_ptr<int> wPtr;
         {
             sh::Variant<std::shared_ptr<int>> var1(std::make_shared<int>(1));
-            auto var2 = std::move(var1);
+            sh::Variant<std::shared_ptr<int>> var2;
+            var2 = std::move(var1);
             SECTION("Internal object is destroyed on move") {
                 REQUIRE(var1.get<std::shared_ptr<int>>() == nullptr);
             }
             REQUIRE(var2.get<std::shared_ptr<int>>().use_count() == 1);
             REQUIRE(*var2.get<std::shared_ptr<int>>() == 1);
+            
             wPtr = var2.get<std::shared_ptr<int>>();
+            REQUIRE(wPtr.use_count() > 0);
         }
-
-        SECTION("All objects destroyed") {
-            REQUIRE(wPtr.use_count() == 0);
-        }
+        
+        REQUIRE(wPtr.use_count() == 0);
+    }
+    
+    SECTION("Variants preserve index on move and assign") {
+        using V = sh::Variant<bool, int, std::string, int>;
+        V var(std::in_place_index<3>, 10);
+        REQUIRE(var.getIndex() == 3);
+        
+        V copy;
+        copy = var;
+        REQUIRE(copy.getIndex() == 3);
+        REQUIRE(copy.getAt<3>() == 10);
+        
+        V move;
+            move = std::move(var);
+        REQUIRE(move.getIndex() == 3);
+        REQUIRE(move.getAt<3>() == 10);
     }
 
     SECTION("Assign different type") {
@@ -121,6 +165,7 @@ TEST_CASE("Assigning to variants ", "[Variant]") {
         
         var = str;
         REQUIRE(var.get<std::string>() == str);
+        REQUIRE(var.getIndex() == 1);
     }
 }
 
@@ -217,9 +262,11 @@ TEST_CASE("Using get ", "[Variant]") {
     REQUIRE(sh::get<0>(var2) == nullptr);
 }
 
+// Section of stuff I still need to figure out how to fix
 TEST_CASE("Gotchas ", "[Variant]") {
-    // Section of stuff I still need to figure out how to fix
-    using V = sh::Variant<bool, std::string>;
-    V var("hello");
-    REQUIRE(var.getIndex() == 0); // Should ideally be 1, but we end up picking bool
+    SECTION("Explicit conversions") {
+        using V = sh::Variant<bool, std::string>;
+        V var("hello");
+        REQUIRE(var.getIndex() == 0); // Should ideally be 1, but we end up picking bool
+    }
 }

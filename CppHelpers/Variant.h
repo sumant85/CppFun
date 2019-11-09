@@ -96,7 +96,7 @@ public:
     
     template <typename Element, typename = IsInPack_t<std::decay_t<Element>, Ts...>>
     constexpr Variant(Element&& element) {
-        init<Element>(std::forward<Element>(element));
+        init<Index_v<std::decay_t<Element>, Ts...>>(std::forward<Element>(element));
     }
     
     template <typename Element,
@@ -110,16 +110,14 @@ public:
     template <IdxType Idx, typename... Args>
     constexpr Variant(std::in_place_index_t<Idx>, Args&&... args)
             noexcept(std::is_nothrow_constructible_v<TypeAt<Idx, Ts...>, Args...>) {
-        using T = TypeAt<Idx, Ts...>;
-        init<T>(std::forward<Args>(args)...);
+        init<Idx>(std::forward<Args>(args)...);
     }
     
     // TODO: Simplify these noexcepts :|
     template <IdxType Idx, typename U, typename... Args>
     constexpr Variant(std::in_place_index_t<Idx>, std::initializer_list<U> il, Args&&... args)
     noexcept(std::is_nothrow_constructible_v<TypeAt<Idx, Ts...>, std::initializer_list<U>, Args...>) {
-        using T = TypeAt<Idx, Ts...>;
-        init<T>(std::move(il), std::forward<Args>(args)...);
+        init<Idx>(std::move(il), std::forward<Args>(args)...);
     }
     
     IdxType getIndex() const noexcept {
@@ -127,27 +125,30 @@ public:
     }
     
     constexpr Variant() noexcept(std::is_nothrow_default_constructible_v<TypeAt<0, Ts...>>) {
-        using T = TypeAt<0, Ts...>;
-        init<T>();
+        init<0>();
     }
     
     constexpr Variant(const Variant& other) noexcept(NTCC) {
         visit([&](const auto& v) {
-            init(v);
+            using T = std::decay_t<decltype(v)>;
+            init<Index_v<T, Ts...>>(v);
         }, other);
+        typeIdx_ = other.typeIdx_;
     }
     
     constexpr Variant(Variant&& other) noexcept(NTMC) {
         visit([&](auto&& v) {
-            init(std::move(v));
+            using T = std::decay_t<decltype(v)>;
+            init<Index_v<T, Ts...>>(std::move(v));
         }, other);
+        typeIdx_ = other.typeIdx_;
     }
     
     // TODO: The use of noexcept here is a hammer, we can do it per-type
     template <typename T, typename = IsInPack_t<std::decay_t<T>, Ts...>>
     constexpr Variant& operator=(T&& val) noexcept(NTA) {
         destroy();
-        init<T>(std::forward<T>(val));
+        init<Index_v<T, Ts...>>(std::forward<T>(val));
         return *this;
     }
     
@@ -218,18 +219,11 @@ private:
     static constexpr auto NTMA = std::conjunction_v<std::is_nothrow_move_assignable<Ts>...>;
     static constexpr auto NTA = NTCA && NTMA;
     
-    template <typename T>
-    void init(T&& element) {
-        using D = std::decay_t<T>;
-        typeIdx_ = Index_v<D, Ts...>;
-        new (&storage_) D(std::forward<T>(element));
-    }
-    
-    template <typename T, typename... Args>
+    template <IdxType Idx, typename... Args>
     void init(Args&&... args) {
-        using D = std::decay_t<T>;
-        typeIdx_ = Index_v<D, Ts...>;
-        new (&storage_) D(std::forward<Args>(args)...);
+        using T = TypeAt<Idx, Ts...>;
+        typeIdx_ = Idx;
+        new (&storage_) T(std::forward<Args>(args)...);
     }
     
     void destroy() noexcept(NTD) {
