@@ -6,7 +6,10 @@
 //  Copyright © 2019 Sumant Hanumante. All rights reserved.
 //
 
+#include <array>
 #include <iostream>
+
+#include "ArrayVector.hpp"
 #include "Guard.h"
 #include "Variant.h"
 
@@ -71,40 +74,95 @@ bar(c); // T === int
 
 #endif
 
-TEST_CASE( "Prototyping", "quick prototyping" ) {
-    struct Test {
-        Test() {
-            std::cout << "[Test] Constructed" << std::endl;
-        }
-        
-        Test(Test&& o) {
-            std::cout << "[Test] Move Constructed " << std::endl;
-            ptr = std::move(o.ptr);
-        }
-        
-        Test(const Test& o) {
-            std::cout << "[Test] Copy Constructed" << std::endl;
-            ptr = o.ptr;
-        }
-        
-        Test& operator=(const Test& o) {
-            std::cout << "[Test] Copy Assign" << std::endl;
-            ptr = o.ptr;
-            return *this;
-        }
-        
-        Test& operator=(Test&& o) {
-            std::cout << "[Test] Move Assign" << std::endl;
-            ptr = std::move(o.ptr);
-            return *this;
-        }
-        
-        ~Test() {
-            std::cout << "[Test] Destroyed" << std::endl;
-        }
+struct Test {
+    Test(std::shared_ptr<bool> p = nullptr) : ptr(p ? std::move(p) : std::make_shared<bool>(true)) {
+        std::cout << "[Test] Constructed" << std::endl;
+    }
+    
+    Test(Test&& o) noexcept(false) {
+        std::cout << "[Test] Move Constructed " << std::endl;
+        ptr = std::move(o.ptr);
+    }
+    
+    Test(const Test& o) {
+        std::cout << "[Test] Copy Constructed" << std::endl;
+        ptr = o.ptr;
+    }
+    
+    Test& operator=(const Test& o) {
+        std::cout << "[Test] Copy Assign" << std::endl;
+        ptr = o.ptr;
+        return *this;
+    }
+    
+    Test& operator=(Test&& o) {
+        std::cout << "[Test] Move Assign" << std::endl;
+        ptr = std::move(o.ptr);
+        return *this;
+    }
+    
+    friend bool operator==(const Test& l, const Test& r) {
+        return l.ptr == r.ptr;
+    }
+    
+    ~Test() {
+        std::cout << "[Test] Destroyed" << std::endl;
+    }
 
+    std::shared_ptr<bool> ptr;
+};
+
+struct DestrThrows {
+    ~DestrThrows() noexcept(false) {
+        std::cout << "~DestrThrows" << std::endl;
+        throw 1;
+    }
+};
+
+TEST_CASE( "Prototyping", "quick prototyping" ) {
+    
+    {   
         std::shared_ptr<bool> ptr = std::make_shared<bool>(true);
-    };
+        std::shared_ptr<bool> ptr1 = std::make_shared<bool>(true);
+        std::shared_ptr<bool> ptr2 = std::make_shared<bool>(true);
+        {
+            sh::ArrayVector<Test, 10> a1{{ptr, ptr1}};
+            a1.emplace_back(ptr2);
+            REQUIRE(a1[1].ptr.use_count() == 2);
+            
+            auto a2 = a1;
+            REQUIRE(a1[1].ptr.use_count() == 3);
+            REQUIRE(a1 == a2);
+            
+            int i = 0;
+            for (const auto& ele : a1) {
+                REQUIRE(ele.ptr.use_count() == 3);
+                ++i;
+            }
+            REQUIRE(i == 3);
+            
+            for (auto it = a1.begin(); it != a1.end(); ++it) {
+                REQUIRE(it->ptr.use_count() == 3);
+            }
+            
+            a2.resize(2);
+            ptr2.reset();
+
+            auto a3 = std::move(a1);
+            REQUIRE(a3[2].ptr.use_count() == 1);
+        
+            a2.clear();
+            REQUIRE(a3[1].ptr.use_count() == 2);
+        }
+        REQUIRE(ptr.use_count() == 1);
+        REQUIRE(ptr1.use_count() == 1);
+    }
+    
+    {
+        sh::ArrayVector<std::shared_ptr<int>, 10> a1;
+        auto a2 = a1;
+        REQUIRE(a2.size() == a1.size());
+    }
     
     {
         Test t{};
