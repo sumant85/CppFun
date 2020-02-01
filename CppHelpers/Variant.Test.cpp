@@ -36,7 +36,7 @@ struct NonMovableNonCopyable : public sh::NonMovable, public sh::NonCopyable {};
 constexpr auto str = "hello world";
 }
 
-TEST_CASE("noexcept correctness ", "[Variant]") {
+TEST_CASE("[Variant] noexcept correctness") {
     using V = sh::Variant<int, char, float>;
     static_assert(std::is_nothrow_move_constructible_v<V>);
     static_assert(std::is_nothrow_copy_constructible_v<V>);
@@ -56,7 +56,7 @@ TEST_CASE("noexcept correctness ", "[Variant]") {
     static_assert(!std::is_nothrow_destructible_v<V3>);
 }
 
-TEST_CASE("Constructing variants ", "[Variant]") {
+TEST_CASE("[Variant] Constructing variants") {
     SECTION("Default construction") {
         sh::Variant<int, float, double, bool> var;
         REQUIRE(var.getIndex() == 0);
@@ -131,7 +131,7 @@ TEST_CASE("Constructing variants ", "[Variant]") {
     }
 }
 
-TEST_CASE("Destructing variants ", "[Variant]") {
+TEST_CASE("[Variant] Destructing variants") {
     SECTION("Ensure non-trivial object is destroyed") {
         auto ptr = std::make_shared<bool>(true);
         std::weak_ptr<bool> wPtr = ptr;
@@ -159,7 +159,7 @@ TEST_CASE("Destructing variants ", "[Variant]") {
     }
 }
 
-TEST_CASE("Assigning to variants ", "[Variant]") {
+TEST_CASE("[Variant] Assigning to variants") {
     SECTION("Copy assign") {
         sh::Variant<std::shared_ptr<int>> var1(std::make_shared<int>(1));
         sh::Variant<std::shared_ptr<int>> var2;
@@ -208,7 +208,7 @@ TEST_CASE("Assigning to variants ", "[Variant]") {
     }
 }
 
-TEST_CASE("Visiting variants ", "[Variant]") {
+TEST_CASE("[Variant] Visiting ") {
     using V = sh::Variant<int, std::string, double>;
     SECTION("Check visit with lambda") {
         V var(str);
@@ -284,7 +284,7 @@ TEST_CASE("Visiting variants ", "[Variant]") {
     }
 }
 
-TEST_CASE("Using get ", "[Variant]") {
+TEST_CASE("[Variant] Using get ") {
     using V = sh::Variant<std::shared_ptr<int>, std::string, double>;
     V var(2.0);
     REQUIRE(sh::get<2>(var) == 2.0);
@@ -302,7 +302,7 @@ TEST_CASE("Using get ", "[Variant]") {
 }
 
 // Section of stuff I still need to figure out how to fix
-TEST_CASE("Gotchas ", "[Variant]") {
+TEST_CASE("[Variant] Gotchas ") {
     SECTION("Explicit conversions") {
         using V = sh::Variant<bool, std::string>;
         // It's possible to special case for char and string types, but should I?...

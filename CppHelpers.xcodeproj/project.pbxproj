@@ -10,6 +10,7 @@
 		5682F31A2352577B005B2103 /* Variant.Test.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5682F3182352577B005B2103 /* Variant.Test.cpp */; };
 		568B3CF623011EA500CFFAAD /* main.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 568B3CF523011EA500CFFAAD /* main.cpp */; };
 		568B3D00231A2F5F00CFFAAD /* Guard.Test.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 568B3CFF231A2F5F00CFFAAD /* Guard.Test.cpp */; };
+		56E96F9D23E2B0AA00377B3D /* ArrayVector.Test.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 567B4A9523A0D27F0079EB62 /* ArrayVector.Test.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -25,6 +26,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		567B4A93239F663F0079EB62 /* ArrayVector.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ArrayVector.hpp; sourceTree = "<group>"; };
+		567B4A9523A0D27F0079EB62 /* ArrayVector.Test.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ArrayVector.Test.cpp; sourceTree = "<group>"; };
 		5682F3182352577B005B2103 /* Variant.Test.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Variant.Test.cpp; sourceTree = "<group>"; };
 		568B3CF223011EA500CFFAAD /* CppHelpers */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = CppHelpers; sourceTree = BUILT_PRODUCTS_DIR; };
 		568B3CF523011EA500CFFAAD /* main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = main.cpp; sourceTree = "<group>"; };
@@ -74,6 +77,8 @@
 				56E72C862336BAB60002F250 /* TEContainer.h */,
 				56E72C8723374C8C0002F250 /* Variant.h */,
 				5682F3182352577B005B2103 /* Variant.Test.cpp */,
+				567B4A93239F663F0079EB62 /* ArrayVector.hpp */,
+				567B4A9523A0D27F0079EB62 /* ArrayVector.Test.cpp */,
 			);
 			path = CppHelpers;
 			sourceTree = "<group>";
@@ -135,6 +140,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				568B3CF623011EA500CFFAAD /* main.cpp in Sources */,
+				56E96F9D23E2B0AA00377B3D /* ArrayVector.Test.cpp in Sources */,
 				5682F31A2352577B005B2103 /* Variant.Test.cpp in Sources */,
 				568B3D00231A2F5F00CFFAAD /* Guard.Test.cpp in Sources */,
 			);
