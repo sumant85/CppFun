@@ -14,6 +14,16 @@
 
 #include <memory>
 
+namespace {
+struct Counter {
+    static inline auto cnt = 0;
+    Counter() { cnt++; }
+    Counter(Counter&& o) { cnt++; }
+    Counter(const Counter& o) { cnt++; }
+    ~Counter() { cnt--; }
+};
+}
+
 TEST_CASE("[ArrayVector] construction") {
     SECTION("Default construction") {
         using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
@@ -66,6 +76,14 @@ TEST_CASE("[ArrayVector] construction") {
         REQUIRE(ptr.use_count() == 5);
     }
     
+    SECTION("Iterator construction") {
+        using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
+        auto ptr = std::make_shared<bool>();
+        Vec v(4, ptr);
+        Vec v1(v.begin(), v.end());
+        REQUIRE(ptr.use_count() == 9);
+    }
+    
     SECTION("2d array Vector") {
         using Vec = sh::ArrayVector<sh::ArrayVector<bool, 5>, 6>;
         Vec v(6, sh::ArrayVector<bool, 5>(5, true));
@@ -89,6 +107,20 @@ TEST_CASE("[ArrayVector] construction") {
         Vec v;
         v.push_back(DefaultDelete{1});
     }
+    
+    SECTION("Move-only types") {
+        using Vec = sh::ArrayVector<std::unique_ptr<bool>, 10>;
+        Vec v(2);
+        REQUIRE(v.size() == 2);
+        REQUIRE(v[0] == nullptr);
+        REQUIRE(v[0] == v[1]);
+        v.push_back(std::make_unique<bool>(true));
+        
+        Vec v1 = std::move(v);
+        REQUIRE(v1.size() == 3);
+        REQUIRE(v1[2] != nullptr);
+        REQUIRE(*v1[2] == true);
+    }
 }
 
 TEST_CASE("[ArrayVector] destruction") {
@@ -104,22 +136,66 @@ TEST_CASE("[ArrayVector] destruction") {
             REQUIRE(ptr.use_count() == 7);
         }
         REQUIRE(ptr.unique());
+        
+        Counter::cnt = 0;
+        {
+            using Vec = sh::ArrayVector<Counter, 10>;
+            Vec v(1);
+            REQUIRE(Counter::cnt == 1);
+            v.push_back(Counter());
+            REQUIRE(Counter::cnt == 2);
+            
+            auto v1 = std::move(v);
+            auto v2 = std::move(v1);
+            auto v3 = v2;
+            for (int i = 0; i < 5; ++i) {
+                v2.push_back({});
+                v3.push_back({});
+            }
+        }
+        REQUIRE(Counter::cnt == 0);
     }
 }
 
 TEST_CASE("[ArrayVector] affordances") {
     SECTION("push_back") {
-        using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
-        Vec v;
-        REQUIRE(v.size() == 0);
-        for (int i = 1; i < 10; ++i) {
-            v.push_back(std::make_shared<bool>(true));
-            REQUIRE(v.size() == i);
+        {
+            using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
+            Vec v;
+            REQUIRE(v.size() == 0);
+            for (int i = 1; i < 10; ++i) {
+                v.push_back(std::make_shared<bool>(true));
+                REQUIRE(v.size() == i);
+            }
+            std::for_each(v.begin(), v.end(), [](const auto& val) {
+                REQUIRE(val.unique());
+                REQUIRE(*val == true);
+            });
         }
-        std::for_each(v.begin(), v.end(), [](const auto& val) {
-            REQUIRE(val.unique());
-            REQUIRE(*val == true);
-        });
+        {
+            using Vec = sh::ArrayVector<std::unique_ptr<bool>, 10>;
+            Vec v;
+            REQUIRE(v.size() == 0);
+            for (int i = 1; i < 10; ++i) {
+                v.push_back(std::make_unique<bool>(true));
+                REQUIRE(v.size() == i);
+            }
+        }
+        {
+            struct DefaultDeleted {
+                DefaultDeleted() = delete;
+                ~DefaultDeleted() = default;
+                DefaultDeleted(int n) : num(n) {}
+                int num;
+            };
+            using Vec = sh::ArrayVector<DefaultDeleted, 10>;
+            Vec v;
+            REQUIRE(v.size() == 0);
+            for (int i = 1; i < 10; ++i) {
+                v.push_back(DefaultDeleted(i));
+                REQUIRE(v.back().num == i);
+            }
+        }
     }
     
     SECTION("pop_back resize clear") {
@@ -186,6 +262,27 @@ TEST_CASE("[ArrayVector] affordances") {
         for (int i = 0; i < v.size() - 1; ++i) {
             REQUIRE(v[i] == i+1);
         }
+    }
+        
+    SECTION("erase") {
+        using Vec = sh::ArrayVector<int, 10>;
+        Vec v{0, 1, 2, 3, 4, 5, 6};
+        
+        v.erase(v.begin()+3);
+        REQUIRE(v.size() == 6);
+        REQUIRE(v == Vec{0, 1, 2, 4, 5, 6});
+        
+        v.erase(v.begin()+v.size()-1);
+        REQUIRE(v == Vec{0, 1, 2, 4, 5});
+        
+        v.erase(v.begin());
+        REQUIRE(v == Vec{1, 2, 4, 5});
+        
+        v.erase(v.begin()+1, v.begin()+2);
+        REQUIRE(v == Vec{1, 4, 5});
+        
+        v.erase(v.begin(), v.end());
+        REQUIRE(v.empty());
     }
     
     SECTION("swap") {

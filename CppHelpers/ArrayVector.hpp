@@ -18,21 +18,24 @@ template <typename T, size_t Capacity, bool PerformBoundsCheck = false>
 class ArrayVector {
 public:
     ArrayVector() = default;
-    
-    constexpr ArrayVector(size_t initialSize, const T& defaultValue) noexcept(NTC) {
+  
+    explicit constexpr ArrayVector(size_t initialSize, const T& defaultValue) noexcept(NTCC) : ArrayVector() {
         assert(initialSize <= capacity_);
         if constexpr (std::is_trivially_constructible_v<T>) {
             auto ptr = reinterpret_cast<T*>(storage_.data());
             std::fill(ptr, ptr + initialSize, defaultValue);
         } else {
             while (size_ < initialSize) {
-                push_back(defaultValue);
+                emplace_back(defaultValue);
             }
         }
     }
     
-    template <typename = std::is_default_constructible<T>>
-    constexpr ArrayVector(size_t initialSize) noexcept(NTC) : ArrayVector(initialSize, T{}) {}
+    constexpr ArrayVector(size_t initialSize) noexcept(NTDC) : ArrayVector() {
+        while (size_ < initialSize) {
+            emplace_back();
+        }
+    }
     
     // If a copy construction throws, state of *this is undefined.
     // other is unmodified.
@@ -69,8 +72,8 @@ public:
         }
     }
     
-    // The destructor isn't marked noexcept(NTD) because if we throw during
-    // destruction, then we can potentially leak. In such a case, we just
+    // The destructor is marked noexcept [default] because if we throw during
+    // destruction, then we can potentially leak the contents. In such a case, we just
     // choose to terminate than leak
     ~ArrayVector() {
         clear();
@@ -81,7 +84,7 @@ public:
     noexcept(std::is_nothrow_constructible_v<T, U>) {
         assert(il.size() <= capacity_);
         for (auto it = il.begin(); it != il.end(); ++it) {
-            emplace_back(*it);
+            emplace_back(std::move(*it));
         }
     }
     
@@ -170,15 +173,15 @@ public:
         return reinterpret_cast<const T&>(storage_[0]);
     }
     
-    constexpr size_t size() const noexcept(true) {
+    constexpr size_t size() const noexcept {
         return size_;
     }
     
-    constexpr size_t capacity() const noexcept(true) {
+    constexpr size_t capacity() const noexcept {
         return capacity_;
     }
     
-    constexpr bool empty() const noexcept(true) {
+    constexpr bool empty() const noexcept {
         return size_ == 0;
     }
     
@@ -186,21 +189,21 @@ public:
         shorten(0);
     }
     
-    constexpr T& operator[](size_t pos) noexcept(true) {
+    constexpr T& operator[](size_t pos) noexcept {
         assert(pos >=0 && pos < capacity_);
         return reinterpret_cast<T&>(storage_[pos]);
     }
     
-    constexpr const T& operator[](size_t pos) const noexcept(true) {
+    constexpr const T& operator[](size_t pos) const noexcept {
         assert(pos >=0 && pos < capacity_);
         return reinterpret_cast<const T&>(storage_[pos]);
     }
     
-    constexpr T* data() noexcept(true) {
+    constexpr T* data() noexcept {
         return reinterpret_cast<T*>(storage_.data());
     }
     
-    constexpr const T* data() const noexcept(true) {
+    constexpr const T* data() const noexcept {
         return reinterpret_cast<const T*>(storage_.data());
     }
 
@@ -232,15 +235,40 @@ public:
     constexpr auto crbegin() const noexcept {return rbegin();}
     constexpr auto crend() const noexcept {return rend();}
     
-    friend bool operator==(const ArrayVector& l, const ArrayVector& r) noexcept {
+    constexpr ArrayVector(const_iterator begin, const_iterator end) noexcept(NTDC) : ArrayVector() {
+        for (auto it = begin; it != end; ++it) {
+            emplace_back(*it);
+        }
+    }
+    
+    // Exception safety: No leaks, but array might be left in invalid state if exception
+    // is thrown while moving elements to account for the erased element.
+    constexpr void erase(const_iterator begin) noexcept(NTD && NTMA) {
+        erase(begin, begin + 1);
+    }
+    
+    // Erase from inclusive and to exclusive
+    // Exception safety: No leaks, but array might be left in invalid state if exception
+    // is thrown while erasing.
+    constexpr void erase(const_iterator from, const_iterator to) noexcept(NTD && NTMA) {
+        auto first = const_cast<iterator>(from);
+        auto last = const_cast<iterator>(to);
+        // Instead of rotate, we move construct only the requied elements
+        while (last < end()) {
+            *first++ = std::move(*last++);
+        }
+        resize(size() - (last - first));
+    }
+    
+    constexpr friend bool operator==(const ArrayVector& l, const ArrayVector& r) noexcept {
         return std::equal(l.begin(), l.end(), r.begin());
     }
     
-    friend bool operator!=(const ArrayVector& l, const ArrayVector& r) noexcept {
+    constexpr friend bool operator!=(const ArrayVector& l, const ArrayVector& r) noexcept {
         return !(l == r);
     }
     
-    friend void swap(ArrayVector& a1, ArrayVector& a2) {
+    constexpr friend void swap(ArrayVector& a1, ArrayVector& a2) {
         ArrayVector& smaller = a1;
         ArrayVector& larger = a2;
         if (a1.size() > a2.size()) {
@@ -263,6 +291,7 @@ private:
     static constexpr auto NTS = std::is_nothrow_swappable_v<T>;
     static constexpr auto NTCA = std::is_nothrow_copy_assignable_v<T>;
     static constexpr auto NTCC = std::is_nothrow_copy_constructible_v<T>;
+    static constexpr auto NTDC = std::is_nothrow_default_constructible_v<T>;
     static constexpr auto NTMA = std::is_nothrow_move_assignable_v<T>;
     static constexpr auto NTMC = std::is_nothrow_move_constructible_v<T>;
     static constexpr auto capacity_ = Capacity;
