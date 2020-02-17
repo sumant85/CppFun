@@ -9,7 +9,7 @@
 #include <array>
 #include <iostream>
 
-#include "ArrayVector.hpp"
+#include "ArrayVector.h"
 #include "Guard.h"
 #include "Variant.h"
 
@@ -47,7 +47,7 @@ Learnings about SFINAE:
 - Never deduces a type to an rvalue
 - Constness is preserved
 - For universal reference:
-- An lvalue gets deduced to lvalue reference
+- An lvalue gets deduced to lvalue reference (ie T = lvalue ref)
 - An rvalue (both prvalue and xrvalue) gets deduced to lvalue (and not reference)
 
 Example:
@@ -120,6 +120,14 @@ struct DestrThrows {
 };
 
 TEST_CASE( "Prototyping", "quick prototyping" ) {
+    
+    {
+        struct Test {
+            
+            using Storage = std::aligned_storage_t<sizeof(void*), alignof(void*)>;
+            
+        };
+    }
     
     {   
         std::shared_ptr<bool> ptr = std::make_shared<bool>(true);

@@ -8,7 +8,7 @@
 
 #include <catch2/catch.hpp>
 
-#include "ArrayVector.hpp"
+#include "ArrayVector.h"
 #include "NonCopyable.h"
 #include "NonMovable.h"
 
@@ -40,8 +40,8 @@ TEST_CASE("[ArrayVector] construction") {
         std::for_each(v2.begin(), v2.end(), [](const auto& val) { REQUIRE(val == nullptr); });
         
         struct NoInit {
-            NoInit() { REQUIRE(false); }
-            ~NoInit() { REQUIRE(false); }
+            NoInit() { throw 1; }
+            ~NoInit() noexcept(false) { throw 1; }
         };
         sh::ArrayVector<NoInit, 2> vec;
         REQUIRE(true);
@@ -74,6 +74,7 @@ TEST_CASE("[ArrayVector] construction") {
         Vec v0(4, ptr);
         Vec v1 = std::move(v0);
         REQUIRE(ptr.use_count() == 5);
+        REQUIRE(v0.size() == 0);
     }
     
     SECTION("Iterator construction") {
@@ -308,5 +309,59 @@ TEST_CASE("[ArrayVector] affordances") {
         }
         REQUIRE(ptrF.unique());
         REQUIRE(ptrT.unique());
+    }
+        
+    SECTION("Copy Assignment") {
+        using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
+        auto ptr = std::make_shared<bool>();
+        SECTION("shorten") {
+            Vec v0(4, ptr);
+            Vec v1(3, ptr);
+            REQUIRE(ptr.use_count() == 8);
+            
+            v0 = v1;
+            REQUIRE(ptr.use_count() == 7);
+            REQUIRE(v0.size() == v1.size());
+            REQUIRE(v0.size() == 3);
+        }
+        REQUIRE(ptr.use_count() == 1);
+        
+        SECTION("lengthen") {
+            Vec v0(4, ptr);
+            Vec v1(3, ptr);
+            REQUIRE(ptr.use_count() == 8);
+            
+            v1 = v0;
+            REQUIRE(ptr.use_count() == 9);
+            REQUIRE(v0.size() == v1.size());
+            REQUIRE(v0.size() == 4);
+        }
+    }
+    
+    SECTION("Move Assignment") {
+        using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
+        auto ptr = std::make_shared<bool>();
+        SECTION("shorten") {
+            Vec v0(4, ptr);
+            Vec v1(3, ptr);
+            REQUIRE(ptr.use_count() == 8);
+            
+            v0 = std::move(v1);
+            REQUIRE(ptr.use_count() == 4);
+            REQUIRE(v0.size() == 3);
+            REQUIRE(v1.size() == 0);
+        }
+        REQUIRE(ptr.use_count() == 1);
+        
+        SECTION("lengthen") {
+            Vec v0(4, ptr);
+            Vec v1(3, ptr);
+            REQUIRE(ptr.use_count() == 8);
+            
+            v1 = std::move(v0);
+            REQUIRE(ptr.use_count() == 5);
+            REQUIRE(v0.size() == 0);
+            REQUIRE(v1.size() == 4);
+        }
     }
 }

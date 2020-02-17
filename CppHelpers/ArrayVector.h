@@ -70,12 +70,16 @@ public:
                 push_back(std::move(other[size_]));
             }
         }
+        
+        // To give an API similar to vector, also clear out other so that
+        // size() will return 0
+        other.clear();
     }
     
-    // The destructor is marked noexcept [default] because if we throw during
+    // The destructor is marked noexcept because if we throw during
     // destruction, then we can potentially leak the contents. In such a case, we just
     // choose to terminate than leak
-    ~ArrayVector() {
+    ~ArrayVector() noexcept {
         clear();
     }
     
@@ -90,6 +94,8 @@ public:
     
     // Exception safety: No leaks, input remains unmodified.
     // *this continues to be valid on exception, but existing state maybe be modified
+    // Copy and swap is expensive here since swap is also a O(n) operation, so instead
+    // we assume there is no aliasing.
     constexpr ArrayVector& operator=(const ArrayVector& other) noexcept(NTCA && NTCC && NTD) {
         shorten(other.size());
         size_t idx = 0;
@@ -100,6 +106,8 @@ public:
         while (size_ < other.size()) {
             push_back(other[size_]);
         }
+        
+        return *this;
     }
     
     // Exception safety: No leaks, both *this and other can be in modified states.
@@ -114,6 +122,9 @@ public:
             push_back(std::move(other[size_]));
         }
         
+        // To give an API similar to vector, also clear out other so that
+        // size() will return 0
+        other.clear();
         return *this;
     }
 
