@@ -22,6 +22,13 @@ struct Counter {
     Counter(const Counter& o) { cnt++; }
     ~Counter() { cnt--; }
 };
+
+struct NonDefaultConstructible {
+    NonDefaultConstructible() = delete;
+    NonDefaultConstructible(int a) {}
+    
+    int a;
+};
 }
 
 TEST_CASE("[ArrayVector] construction") {
@@ -98,15 +105,15 @@ TEST_CASE("[ArrayVector] construction") {
         }
     }
     
-    SECTION("Default-deleted construction") {
-        struct DefaultDelete {
-            DefaultDelete() = delete;
-            DefaultDelete(int i) : i_(i) {}
+    SECTION("deleted-default construction") {
+        struct DeletedDefault {
+            DeletedDefault() = delete;
+            DeletedDefault(int i) : i_(i) {}
             int i_;
         };
-        using Vec = sh::ArrayVector<DefaultDelete, 10>;
+        using Vec = sh::ArrayVector<DeletedDefault, 10>;
         Vec v;
-        v.push_back(DefaultDelete{1});
+        v.push_back(DeletedDefault{1});
     }
     
     SECTION("Move-only types") {
@@ -200,29 +207,56 @@ TEST_CASE("[ArrayVector] affordances") {
     }
     
     SECTION("pop_back resize clear") {
-        using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
-        auto ptr = std::make_shared<bool>();
+        SECTION("Non-trivial type") {
+            using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
+            auto ptr = std::make_shared<bool>();
+            
+            Vec v(5, ptr);
+            v.pop_back();
+            REQUIRE(v.size() == 4);
+            REQUIRE(ptr.use_count() == 5);
+            
+            v.resize(8, ptr);
+            REQUIRE(v.size() == 8);
+            REQUIRE(ptr.use_count() == 9);
+            
+            v.resize(9);
+            REQUIRE(v.size() == 9);
+            REQUIRE(ptr.use_count() == 9);
+            
+            v.resize(5, ptr);
+            REQUIRE(v.size() == 5);
+            REQUIRE(ptr.use_count() == 6);
+            
+            v.clear();
+            REQUIRE(v.size() == 0);
+            REQUIRE(ptr.use_count() == 1);
+        }
         
-        Vec v(5, ptr);
-        v.pop_back();
-        REQUIRE(v.size() == 4);
-        REQUIRE(ptr.use_count() == 5);
-        
-        v.resize(8, ptr);
-        REQUIRE(v.size() == 8);
-        REQUIRE(ptr.use_count() == 9);
-        
-        v.resize(9);
-        REQUIRE(v.size() == 9);
-        REQUIRE(ptr.use_count() == 9);
-        
-        v.resize(5, ptr);
-        REQUIRE(v.size() == 5);
-        REQUIRE(ptr.use_count() == 6);
-        
-        v.clear();
-        REQUIRE(v.size() == 0);
-        REQUIRE(ptr.use_count() == 1);
+        SECTION("Trivial type") {
+            using Vec = sh::ArrayVector<float, 10>;
+            
+            Vec v(5, 2.f);
+            v.pop_back();
+            REQUIRE(v.size() == 4);
+            
+            v.resize(8, 3.f);
+            REQUIRE(v.size() == 8);
+            for (int i = 0; i < v.size(); ++i) {
+                if (i < 4) { REQUIRE(v[i] == 2.f); }
+                else { REQUIRE(v[i] == 3.f); }
+            }
+            
+            v.resize(9, 5.f);
+            REQUIRE(v.size() == 9);
+            REQUIRE(v[8] == 5.f);
+            
+            v.resize(5);
+            REQUIRE(v.size() == 5);
+            
+            v.clear();
+            REQUIRE(v.size() == 0);
+        }
     }
     
     SECTION("emplace_back") {
