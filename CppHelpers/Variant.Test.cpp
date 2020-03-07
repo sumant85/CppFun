@@ -12,6 +12,7 @@
 #include "NonCopyable.h"
 #include "NonMovable.h"
 
+#include <array>
 #include <memory>
 
 namespace {
@@ -37,23 +38,50 @@ constexpr auto str = "hello world";
 }
 
 TEST_CASE("[Variant] noexcept correctness") {
-    using V = sh::Variant<int, char, float>;
+    using V = sh::Variant<int, char, float, std::array<int, 10>>;
     static_assert(std::is_nothrow_move_constructible_v<V>);
     static_assert(std::is_nothrow_copy_constructible_v<V>);
     static_assert(std::is_nothrow_destructible_v<V>);
+    static_assert(std::is_trivially_destructible_v<V>);
+    static_assert(std::is_trivially_destructible_v<std::array<V, 10>>);
 
     using V1 = sh::Variant<int, char, MoveThrows>;
     static_assert(!std::is_nothrow_move_constructible_v<V1>);
     static_assert(std::is_nothrow_destructible_v<V1>);
+    static_assert(std::is_trivially_destructible_v<V1>);
 
     using V2 = sh::Variant<int, char, CopyThrows>;
     static_assert(!std::is_nothrow_copy_constructible_v<V2>);
+    static_assert(std::is_trivially_destructible_v<V2>);
 
     static_assert(noexcept(std::swap(std::declval<V&>(), std::declval<V&>())));
     static_assert(!noexcept(std::swap(std::declval<V1&>(), std::declval<V1&>())));
     
     using V3 = sh::Variant<int, DestrThrows>;
     static_assert(!std::is_nothrow_destructible_v<V3>);
+    static_assert(!std::is_trivially_destructible_v<V3>);
+    
+    static_assert(2 == sh::detail::IndexForType<const char*, int, float, std::string>());
+    static_assert(1 == sh::detail::IndexForType<const char*, int, const char*, std::string>());
+    
+    using V4 = sh::Variant<std::shared_ptr<bool>, std::vector<std::string>>;
+    V4 v;
+    static_assert(std::is_lvalue_reference_v<decltype(sh::get<0>(v))>);
+    
+    {
+        using V = sh::Variant<int, float>;
+        sh::Overloaded overload {
+            [](int i) noexcept {},
+            [](float f) noexcept(false) { throw 1; },
+        };
+        static_assert(!noexcept(sh::visit(overload, V{})));
+        
+        sh::Overloaded overloadNoExcept {
+            [](int i) noexcept {},
+            [](float f) noexcept {}
+        };
+        static_assert(noexcept(sh::visit(overloadNoExcept, V{})));
+    }
 }
 
 TEST_CASE("[Variant] Constructing variants") {
@@ -281,6 +309,35 @@ TEST_CASE("[Variant] Visiting ") {
 
         REQUIRE(ptr == nullptr);
         REQUIRE(*var.get<std::shared_ptr<int>>() == 1);
+    }
+    
+    SECTION("Visit with exceptions") {
+        sh::Variant<int, float> v{1.f};
+        bool threw = false;
+        try {
+            sh::visit([](auto& val) noexcept(false) {
+               throw 1;
+           }, v);
+        } catch (...) { threw = true; }
+        REQUIRE(threw);
+
+        sh::Overloaded overload {
+            [](int i) noexcept {},
+            [](float f) noexcept(false) { throw 1; }
+        };
+
+        threw = false;
+        try {
+           sh::visit(overload, v);
+        } catch (...) { threw = true; }
+        REQUIRE(threw);
+        
+        v = 2;
+        threw = false;
+        try {
+           sh::visit(overload, v);
+        } catch (...) { threw = true; }
+        REQUIRE(!threw);
     }
 }
 

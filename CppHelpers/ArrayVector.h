@@ -14,17 +14,61 @@
 #include <type_traits>
 
 namespace sh {
-template <typename T, size_t Capacity, bool PerformBoundsCheck = false>
-class ArrayVector {
+namespace detail {
+#define ARRAY_VECTOR_STORAGE_INTERNALS \
+public: \
+protected: \
+    using Storage = std::aligned_storage_t<sizeof(T), alignof(T)>; \
+    std::array<Storage, Capacity> storage_; \
+    std::size_t size_ = 0; \
+private: \
+    friend Derived; \
+    ArrayVectorStorage() = default;
+
+// This class is used to conditionally enable the type trait for trivial destruction.
+// It uses CRTP to call destroy on Derived if type is non-trivial. Note that we must store
+// all the data members in base class, since the derived class has already been destroyed
+// by the time the base class destructor gets called.
+// Also, note that since we use CRTP, we need to access the base members using `this->` in
+// the derived class.
+template <typename Derived, typename T, std::size_t Capacity, bool TrivialDestr = false>
+class ArrayVectorStorage {
+    ARRAY_VECTOR_STORAGE_INTERNALS
+public:
+    
+    // The destructor is marked noexcept because if we throw during
+    // destruction, then we can potentially leak the contents. In such a case, we just
+    // choose to terminate than leak.
+    ~ArrayVectorStorage() noexcept {
+        static_cast<Derived&>(*this).clear();
+    }
+};
+
+template <typename Derived, typename T, std::size_t Capacity>
+class ArrayVectorStorage<Derived, T, Capacity, true> {
+    ARRAY_VECTOR_STORAGE_INTERNALS
+};
+
+#undef ARRAY_VECTOR_STORAGE_INTERNALS
+}
+
+
+#define CRTP_BASE \
+detail::ArrayVectorStorage<ArrayVector<T, Capacity, PerformBoundsCheck>, \
+                           T, Capacity, std::is_trivially_destructible_v<T>>
+
+template <typename T, std::size_t Capacity, bool PerformBoundsCheck = false>
+class ArrayVector : public CRTP_BASE {
+#undef CRTP_BASE
 public:
     ArrayVector() = default;
   
-    explicit constexpr ArrayVector(size_t initialSize, const T& defaultValue) noexcept(NTCC) : ArrayVector() {
+    explicit constexpr ArrayVector(std::size_t initialSize, const T& defaultValue) noexcept(NTCC) : ArrayVector() {
         assert(initialSize <= capacity_);
         expand(initialSize, defaultValue);
     }
     
-    constexpr ArrayVector(size_t initialSize) noexcept(NTDC) : ArrayVector() {
+    constexpr ArrayVector(std::size_t initialSize) noexcept(NTDC) : ArrayVector() {
         assert(initialSize <= capacity_);
         expand(initialSize);
     }
@@ -40,32 +84,20 @@ public:
     // so there are no leaks.
     constexpr ArrayVector(ArrayVector&& other) noexcept(NTMC) : ArrayVector() {
         if constexpr (std::is_trivially_move_constructible_v<T>) {
-            auto ptr = reinterpret_cast<T*>(storage_.data());
+            auto ptr = reinterpret_cast<T*>(this->storage_.data());
             auto ptrOther = reinterpret_cast<const T*>(other.storage_.data());
             
             std::memcpy(ptr, ptrOther, sizeof(T) * other.size_);
-            size_ = other.size_;
+            this->size_ = other.size_;
         } else {
-            while (size_ < other.size()) {
-                push_back(std::move(other[size_]));
+            while (this->size_ < other.size()) {
+                push_back(std::move(other[this->size_]));
             }
         }
         
         // To give an API similar to vector, also clear out other so that
         // size() will return 0
         other.clear();
-    }
-    
-    // The destructor is marked noexcept because if we throw during
-    // destruction, then we can potentially leak the contents. In such a case, we just
-    // choose to terminate than leak.
-    // When managing a trivially destructible type, the compiler is able to remove the
-    // destructor completely.
-    // TODO: Currently, this class doesn't "inherit" the trivially destructible type from
-    // the managed class T, which is a good to have
-    // so that (static_assert(is_trivially_destructible_v<ArrayVector<TrivialType, 1>)) succeeds
-    ~ArrayVector() noexcept {
-        clear();
     }
     
     template <typename U>
@@ -83,13 +115,13 @@ public:
     // we assume there is no aliasing.
     constexpr ArrayVector& operator=(const ArrayVector& other) noexcept(NTCA && NTCC && NTD) {
         shorten(other.size());
-        size_t idx = 0;
-        while (idx < size_) {
+        std::size_t idx = 0;
+        while (idx < this->size_) {
             (*this)[idx] = other[idx];
             idx++;
         }
-        while (size_ < other.size()) {
-            push_back(other[size_]);
+        while (this->size_ < other.size()) {
+            push_back(other[this->size_]);
         }
         
         return *this;
@@ -98,13 +130,13 @@ public:
     // Exception safety: No leaks, both *this and other can be in modified states.
     constexpr ArrayVector& operator=(ArrayVector&& other) noexcept(NTMA && NTD) {
         shorten(other.size());
-        size_t idx = 0;
-        while (idx < size_) {
+        std::size_t idx = 0;
+        while (idx < this->size_) {
             (*this)[idx] = std::move(other[idx]);
             idx++;
         }
-        while (size_ < other.size()) {
-            push_back(std::move(other[size_]));
+        while (this->size_ < other.size()) {
+            push_back(std::move(other[this->size_]));
         }
         
         // To give an API similar to vector, also clear out other so that
@@ -113,11 +145,19 @@ public:
         return *this;
     }
 
-    constexpr void resize(size_t toSize, const T& defaultValue = {}) noexcept(NTC && NTD) {
-        if (toSize < size_) {
+    constexpr void resize(std::size_t toSize, const T& defaultValue) noexcept(NTC && NTD) {
+        if (toSize < this->size_) {
             shorten(toSize);
         } else {
             expand(toSize, defaultValue);
+        }
+    }
+    
+    constexpr void resize(std::size_t toSize) noexcept(NTC && NTD) {
+        if (toSize < this->size_) {
+            shorten(toSize);
+        } else {
+            expand(toSize);
         }
     }
     
@@ -133,66 +173,66 @@ public:
     constexpr void emplace_back(Args&&... args) noexcept(noexcept(checkSize()) &&
                                                          std::is_nothrow_constructible_v<T, Args...>) {
         checkSize();
-        new (&storage_[size_]) T(std::forward<Args>(args)...);
+        new (&this->storage_[this->size_]) T(std::forward<Args>(args)...);
         // Only increment size after T is constructed so that in case an exception is thrown,
-        // we would only destroy elements from [0, size_)
-        size_++;
+        // we would only destroy elements from [0, this->size_)
+        this->size_++;
     }
     
     constexpr void pop_back() noexcept(NTD) {
         if constexpr (std::is_trivially_destructible<T>()) {
-            size_--;
+            this->size_--;
         } else {
-            reinterpret_cast<T&>(storage_[--size_]).~T();
+            reinterpret_cast<T&>(this->storage_[--this->size_]).~T();
         }
     }
     
     constexpr T& back() noexcept {
-        return reinterpret_cast<T&>(storage_[size_ - 1]);
+        return reinterpret_cast<T&>(this->storage_[this->size_ - 1]);
     }
     constexpr const T& back() const noexcept {
-        return reinterpret_cast<const T&>(storage_[size_ - 1]);
+        return reinterpret_cast<const T&>(this->storage_[this->size_ - 1]);
     }
     
     constexpr T& front() noexcept {
-        return reinterpret_cast<T&>(storage_[0]);
+        return reinterpret_cast<T&>(this->storage_[0]);
     }
     constexpr const T& front() const noexcept {
-        return reinterpret_cast<const T&>(storage_[0]);
+        return reinterpret_cast<const T&>(this->storage_[0]);
     }
     
-    constexpr size_t size() const noexcept {
-        return size_;
+    constexpr std::size_t size() const noexcept {
+        return this->size_;
     }
     
-    constexpr size_t capacity() const noexcept {
+    constexpr std::size_t capacity() const noexcept {
         return capacity_;
     }
     
     constexpr bool empty() const noexcept {
-        return size_ == 0;
+        return this->size_ == 0;
     }
     
     constexpr void clear() noexcept(NTD) {
         shorten(0);
     }
     
-    constexpr T& operator[](size_t pos) noexcept {
+    constexpr T& operator[](std::size_t pos) noexcept {
         assert(pos >=0 && pos < capacity_);
-        return reinterpret_cast<T&>(storage_[pos]);
+        return reinterpret_cast<T&>(this->storage_[pos]);
     }
     
-    constexpr const T& operator[](size_t pos) const noexcept {
+    constexpr const T& operator[](std::size_t pos) const noexcept {
         assert(pos >=0 && pos < capacity_);
-        return reinterpret_cast<const T&>(storage_[pos]);
+        return reinterpret_cast<const T&>(this->storage_[pos]);
     }
     
     constexpr T* data() noexcept {
-        return reinterpret_cast<T*>(storage_.data());
+        return reinterpret_cast<T*>(this->storage_.data());
     }
     
     constexpr const T* data() const noexcept {
-        return reinterpret_cast<const T*>(storage_.data());
+        return reinterpret_cast<const T*>(this->storage_.data());
     }
 
     // Copied from std::array :(
@@ -203,15 +243,15 @@ public:
     typedef const value_type*                     const_iterator;
     typedef value_type*                           pointer;
     typedef const value_type*                     const_pointer;
-    typedef size_t                                size_type;
+    typedef std::size_t                           size_type;
     typedef ptrdiff_t                             difference_type;
     typedef std::reverse_iterator<iterator>       reverse_iterator;
     typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
-    constexpr auto begin() noexcept {return iterator(storage_.data());}
-    constexpr auto begin() const noexcept {return const_iterator(storage_.data());}
-    constexpr auto end() noexcept {return iterator(storage_.data() + size_);}
-    constexpr auto end() const noexcept {return const_iterator(data() + size_);}
+    constexpr auto begin() noexcept {return iterator(this->storage_.data());}
+    constexpr auto begin() const noexcept {return const_iterator(this->storage_.data());}
+    constexpr auto end() noexcept {return iterator(this->storage_.data() + this->size_);}
+    constexpr auto end() const noexcept {return const_iterator(data() + this->size_);}
 
     constexpr auto rbegin() noexcept {return reverse_iterator(end());}
     constexpr auto rbegin() const noexcept {return const_reverse_iterator(end());}
@@ -226,7 +266,7 @@ public:
     constexpr ArrayVector(const_iterator obegin, const_iterator oend) noexcept(NTDC) : ArrayVector() {
         if constexpr (std::is_trivially_constructible_v<T>) {
             std::copy(obegin, oend, begin());
-            size_ = (oend - obegin);
+            this->size_ = (oend - obegin);
         } else {
             for (auto it = obegin; it != oend; ++it) {
                 emplace_back(*it);
@@ -289,37 +329,37 @@ private:
     static constexpr auto NTMC = std::is_nothrow_move_constructible_v<T>;
     static constexpr auto capacity_ = Capacity;
     
-    constexpr void shorten(size_t toSize) noexcept(NTD) {
+    constexpr void shorten(std::size_t toSize) noexcept(NTD) {
         if constexpr (std::is_trivially_destructible_v<T>) {
-            size_ = toSize;
+            this->size_ = toSize;
         } else {
-            while (toSize < size_) {
+            while (toSize < this->size_) {
                 pop_back();
             }
         }
     }
     
-    constexpr void expand(size_t toSize, const T& value) noexcept(NTC) {
+    constexpr void expand(std::size_t toSize, const T& value) noexcept(NTC) {
         if constexpr (std::is_trivially_constructible_v<T>) {
-            auto begin = reinterpret_cast<T*>(storage_.data()) + size_;
-            auto end = begin + (toSize - size_) + 1;
+            auto begin = reinterpret_cast<T*>(this->storage_.data()) + this->size_;
+            auto end = begin + (toSize - this->size_) + 1;
             std::fill(begin, end, value);
-            size_ = toSize;
+            this->size_ = toSize;
         } else {
-            while (size_ < toSize) {
+            while (this->size_ < toSize) {
                 emplace_back(value);
             }
         }
     }
     
-    constexpr void expand(size_t toSize) noexcept(NTC) {
+    constexpr void expand(std::size_t toSize) noexcept(NTC) {
         if constexpr (std::is_trivially_constructible_v<T>) {
-            auto begin = reinterpret_cast<T*>(storage_.data()) + size_;
-            auto end = begin + (toSize - size_) + 1;
+            auto begin = reinterpret_cast<T*>(this->storage_.data()) + this->size_;
+            auto end = begin + (toSize - this->size_) + 1;
             std::fill(begin, end, T{});
-            size_ = toSize;
+            this->size_ = toSize;
         } else {
-            while (size_ < toSize) {
+            while (this->size_ < toSize) {
                 emplace_back();
             }
         }
@@ -327,17 +367,13 @@ private:
     
     constexpr void checkSize() noexcept(!PerformBoundsCheck) {
         if constexpr (PerformBoundsCheck) {
-            if (size_ >= capacity_) {
+            if (this->size_ >= capacity_) {
                 // TODO: Which error to throw here?
                 throw std::runtime_error("Capacity exceeded");
             }
         } else {
-            assert(size_ < capacity_);
+            assert(this->size_ < capacity_);
         }
     }
-    
-    using Storage = std::aligned_storage_t<sizeof(T), alignof(T)>;
-    std::array<Storage, Capacity> storage_;
-    size_t size_ = 0;
 };
 }

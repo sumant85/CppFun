@@ -13,6 +13,13 @@
 #include <utility>
 
 namespace sh {
+
+template<size_t Index, typename Variant>
+decltype(auto) get(Variant&& v) noexcept {
+    return std::forward<Variant>(v).template getAt<Index>();
+}
+
+namespace detail {
 // Can be improved using
 // https://ldionne.com/2015/11/29/efficient-parameter-pack-Idxing/
 template<std::size_t Idx, typename... Pack>
@@ -43,7 +50,7 @@ template<typename... Pack>
 inline constexpr auto MaxAlignment() {
     return std::max({alignof(Pack)...});
 }
-    
+
 static_assert(MaxElementSize<int, int, int>() == sizeof(int));
 static_assert(MaxElementSize<int, double, int>() == sizeof(double));
 static_assert(MaxAlignment<int, short, void*>() == alignof(void*));
@@ -79,77 +86,126 @@ static constexpr size_t IndexForType() {
 }
 static_assert(0 == IndexForType<int, int, float, double>());
 static_assert(1 == IndexForType<float, int, float, double>());
-static_assert(2 == IndexForType<const char*, int, float, std::string>());
-static_assert(1 == IndexForType<const char*, int, const char*, std::string>());
     
-template<size_t Index, typename Variant>
-decltype(auto) get(Variant&& v) {
-    return v.template getAt<Index>();
+template <typename... Ts>
+static constexpr bool IsTriviallyDestructible() {
+    return std::conjunction_v<std::is_trivially_destructible<std::decay_t<Ts>>...>;
 }
-    
+
+template<typename Vis, typename Var, std::size_t... Idx>
+constexpr bool IsNoExcept(std::index_sequence<Idx ...>) {
+    return (noexcept(std::declval<Vis>()(get<Idx>(std::declval<Var>()))) + ...) == sizeof...(Idx);
+}
+
+template<typename Visitor, typename Variant>
+constexpr bool IsNoExcept() {
+    using IdxSeq = std::make_index_sequence<std::decay_t<Variant>::Count>;
+    return IsNoExcept<Visitor, Variant>(IdxSeq{});
+}
+
+#define VARIANT_STORAGE_INTERNALS \
+public: \
+    using IdxType = std::uint32_t; \
+protected: \
+    std::aligned_storage_t<Size, Alignment> storage_; \
+    IdxType typeIdx_; \
+private: \
+    friend Derived; \
+    VariantStorage() = default;
+
+// Variant storage is used to conditionally enable the type trait for trivial destruction.
+// It uses CRTP to call destroy on Derived if type is non-trivial. Note that we must store
+// all the data members in base class, since the derived class has already been destroyed
+// by the time the base class destructor gets called.
+template <typename Derived, size_t Size, size_t Alignment, bool TrivialDestr = false>
+class VariantStorage {
+    VARIANT_STORAGE_INTERNALS
+public:
+    ~VariantStorage() noexcept(noexcept(std::declval<Derived>().destroy())) {
+        static_cast<Derived&>(*this).destroy();
+    }
+};
+
+template <typename Derived, size_t Size, size_t Alignment>
+class VariantStorage<Derived, Size, Alignment, true> {
+    VARIANT_STORAGE_INTERNALS
+};
+
+#undef VARIANT_STORAGE_INTERNALS
+} // namespace detail
+
 template <typename Visitor, typename Variant>
-auto visit(Visitor&& visitor, Variant&& v) -> decltype(visitor(get<0>(std::forward<Variant>(v))));
+auto visit(Visitor&& visitor, Variant&& v) noexcept(detail::IsNoExcept<Visitor, Variant>()) -> decltype(visitor(get<0>(std::forward<Variant>(v))));
+
+#define CRTP_BASE \
+    detail::VariantStorage<Variant<Ts...>, \
+                           detail::MaxElementSize<Ts...>(), \
+                           detail::MaxAlignment<Ts...>(), \
+                           detail::IsTriviallyDestructible<Ts...>()>
 
 template <typename... Ts>
-class Variant {
+class Variant : public CRTP_BASE {
+    friend CRTP_BASE;
+#undef CRTP_BASE
+    
 public:
     using IdxType = std::size_t;
     static constexpr auto Count = sizeof...(Ts);
     
-    template <typename Element, typename = IsInPack_t<std::decay_t<Element>, Ts...>>
+    template <typename Element, typename = detail::IsInPack_t<std::decay_t<Element>, Ts...>>
     constexpr Variant(Element&& element) {
-        init<Index_v<std::decay_t<Element>, Ts...>>(std::forward<Element>(element));
+        init<detail::Index_v<std::decay_t<Element>, Ts...>>(std::forward<Element>(element));
     }
     
     template <typename Element,
-              typename = std::enable_if_t<!IsInPack_v<std::decay_t<Element>, Ts...>>,
+              typename = std::enable_if_t<!detail::IsInPack_v<std::decay_t<Element>, Ts...>>,
               typename = std::enable_if_t<std::disjunction_v<std::is_constructible<Ts, std::decay_t<Element>>...>>,
-              IdxType Idx = IndexForType<Element, Ts...>()
+              IdxType Idx = detail::IndexForType<Element, Ts...>()
              >
-    constexpr Variant(Element&& element) noexcept(std::is_nothrow_constructible_v<TypeAt<Idx, Ts...>, Element>)
+    constexpr Variant(Element&& element) noexcept(std::is_nothrow_constructible_v<detail::TypeAt<Idx, Ts...>, Element>)
         : Variant(std::in_place_index<Idx>, std::forward<Element>(element)) {}
     
     template <IdxType Idx, typename... Args>
     constexpr Variant(std::in_place_index_t<Idx>, Args&&... args)
-            noexcept(std::is_nothrow_constructible_v<TypeAt<Idx, Ts...>, Args...>) {
+            noexcept(std::is_nothrow_constructible_v<detail::TypeAt<Idx, Ts...>, Args...>) {
         init<Idx>(std::forward<Args>(args)...);
     }
     
     template <IdxType Idx, typename U, typename... Args>
     constexpr Variant(std::in_place_index_t<Idx>, std::initializer_list<U> il, Args&&... args)
-    noexcept(std::is_nothrow_constructible_v<TypeAt<Idx, Ts...>, std::initializer_list<U>, Args...>) {
+    noexcept(std::is_nothrow_constructible_v<detail::TypeAt<Idx, Ts...>, std::initializer_list<U>, Args...>) {
         init<Idx>(std::move(il), std::forward<Args>(args)...);
     }
     
     IdxType getIndex() const noexcept {
-        return typeIdx_;
+        return this->typeIdx_;
     }
     
-    constexpr Variant() noexcept(std::is_nothrow_default_constructible_v<TypeAt<0, Ts...>>) {
+    constexpr Variant() noexcept(std::is_nothrow_default_constructible_v<detail::TypeAt<0, Ts...>>) {
         init<0>();
     }
     
     constexpr Variant(const Variant& other) noexcept(NTCC) {
         visit([&](const auto& v) {
             using T = std::decay_t<decltype(v)>;
-            init<Index_v<T, Ts...>>(v);
+            init<detail::Index_v<T, Ts...>>(v);
         }, other);
-        typeIdx_ = other.typeIdx_;
+        this->typeIdx_ = other.typeIdx_;
     }
     
     constexpr Variant(Variant&& other) noexcept(NTMC) {
         visit([&](auto&& v) {
             using T = std::decay_t<decltype(v)>;
-            init<Index_v<T, Ts...>>(std::move(v));
+            init<detail::Index_v<T, Ts...>>(std::move(v));
         }, other);
-        typeIdx_ = other.typeIdx_;
+        this->typeIdx_ = other.typeIdx_;
     }
     
     // TODO: The use of noexcept here is a hammer, we can do it per-type
-    template <typename T, typename = IsInPack_t<std::decay_t<T>, Ts...>>
+    template <typename T, typename = detail::IsInPack_t<std::decay_t<T>, Ts...>>
     constexpr Variant& operator=(T&& val) noexcept(NTA) {
         destroy();
-        init<Index_v<T, Ts...>>(std::forward<T>(val));
+        init<detail::Index_v<T, Ts...>>(std::forward<T>(val));
         return *this;
     }
     
@@ -167,49 +223,45 @@ public:
         return *this;
     }
     
-    template <std::size_t Idx, typename ReturnType = TypeAt<Idx, Ts...>>
+    template <std::size_t Idx, typename ReturnType = detail::TypeAt<Idx, Ts...>>
     ReturnType& getAt() noexcept {
         static_assert(Idx < Count);
-        return reinterpret_cast<ReturnType&>(storage_);
+        return reinterpret_cast<ReturnType&>(this->storage_);
     }
     
-    template <std::size_t Idx, typename ReturnType = TypeAt<Idx, Ts...>>
+    template <std::size_t Idx, typename ReturnType = detail::TypeAt<Idx, Ts...>>
     constexpr const ReturnType& getAt() const noexcept {
-        return reinterpret_cast<const ReturnType&>(storage_);
+        return reinterpret_cast<const ReturnType&>(this->storage_);
     }
     
     // Calling get() with the wrong type is UB, the std equivalent throws and exception
     // but we avoid that penalty and leave it up to the caller
     template <typename Element>
     constexpr Element& get() noexcept {
-        static_assert(IsInPack_v<Element, Ts...>);
-        return reinterpret_cast<Element&>(storage_);
+        static_assert(detail::IsInPack_v<Element, Ts...>);
+        return reinterpret_cast<Element&>(this->storage_);
     }
     
     template <typename Element>
     constexpr const Element& get() const noexcept {
-        return reinterpret_cast<const Element&>(storage_);
+        static_assert(detail::IsInPack_v<Element, Ts...>);
+        return reinterpret_cast<const Element&>(this->storage_);
     }
     
-    template <typename Element, typename = IsInPack_t<Element, Ts...>>
+    template <typename Element, typename = detail::IsInPack_t<Element, Ts...>>
     constexpr Element* getIf() noexcept {
-        if (Index_v<Element, Ts...> == typeIdx_) {
-            return reinterpret_cast<Element*>(&storage_);
+        if (detail::Index_v<Element, Ts...> == this->typeIdx_) {
+            return reinterpret_cast<Element*>(&this->storage_);
         }
         return nullptr;
     }
     
-    template <typename Element, typename = IsInPack_t<Element, Ts...>>
+    template <typename Element, typename = detail::IsInPack_t<Element, Ts...>>
     constexpr const Element* getIf() const noexcept {
-        if (Index_v<Element, Ts...> == typeIdx_) {
-            return reinterpret_cast<const Element*>(&storage_);
+        if (detail::Index_v<Element, Ts...> == this->typeIdx_) {
+            return reinterpret_cast<const Element*>(&this->storage_);
         }
         return nullptr;
-    }
-    
-    ~Variant() noexcept(NTD) {
-        static_assert(IsAllowedInVariant<Ts...>(), "Cannot construct variant for this type");
-        destroy();
     }
     
 private:
@@ -222,16 +274,19 @@ private:
     
     template <IdxType Idx, typename... Args>
     void init(Args&&... args) {
-        using T = TypeAt<Idx, Ts...>;
-        typeIdx_ = Idx;
-        new (&storage_) T(std::forward<Args>(args)...);
+        using T = detail::TypeAt<Idx, Ts...>;
+        this->typeIdx_ = Idx;
+        new (&this->storage_) T(std::forward<Args>(args)...);
     }
     
     void destroy() noexcept(NTD) {
+        if constexpr (detail::IsTriviallyDestructible<Ts...>()) {
+            return;
+        }
+            
         // The alternative to this approach is to store a deleter function pointer as a member
         // variable. The drawback is that we pay for memory for each variant instantiaion at runtime.
-        // Drawback with current approach is larger binary size due to this static array of function
-        // pointers, but smaller footprint.
+        // Drawback with current approach is that we have to do the visit lookup on each destruction.
         visit([](auto& val) noexcept(std::is_nothrow_destructible_v<std::decay_t<decltype(val)>>) {
             using D = std::decay_t<decltype(val)>;
             if constexpr (!std::is_trivially_destructible_v<D>) {
@@ -239,14 +294,9 @@ private:
             }
         }, *this);
     }
-    
-    using Storage = std::aligned_storage_t<MaxElementSize<Ts...>(), MaxAlignment<Ts...>()>;
-    Storage storage_;
-    IdxType typeIdx_ = Count;
 };
 
-// TODO: noexcepts for visit
-template<typename Visitor, typename Variant, bool UseLookupVisitor>
+template<typename Visitor, typename Variant, bool NoExcept, bool UseLookupVisitor>
 struct VisitHelper {
     static decltype(auto) run(Visitor&& visitor, Variant&& v) {
         if constexpr (UseLookupVisitor) {
@@ -259,14 +309,14 @@ struct VisitHelper {
     
     // Here, we statically store a lookup table of function pointers to call for visits. In cases
     // where the index is not known compile time, this method is more efficient since we can
-    // directly lookup to make the call (although there is a penalty of accessing cold memory)
+    // directly lookup without a jump table (although there is a penalty of accessing cold memory)
     // Also, we introduce an extra function in-direction.
     template <std::size_t... Idx>
     static decltype(auto) run(Visitor&& visitor, Variant&& v, std::index_sequence<Idx ...>) {
         using RetType = decltype(visitor(get<0>(std::forward<Variant>(v))));
-        using VisitFn = RetType (*)(Visitor&&, Variant&&);
+        using VisitFn = RetType (*)(Visitor&&, Variant&&) noexcept(NoExcept);
         static const std::array<VisitFn, sizeof...(Idx)> lookup = {
-            [](Visitor&& visitor, Variant&& v) -> RetType {
+            [](Visitor&& visitor, Variant&& v) noexcept(NoExcept) -> RetType {
                 return visitor(std::forward<Variant>(v).template getAt<Idx>());
             }...,
         };
@@ -292,9 +342,9 @@ struct VisitHelper {
 };
 
 template <typename Visitor, typename Variant>
-auto visit(Visitor&& visitor, Variant&& v) -> decltype(visitor(get<0>(std::forward<Variant>(v)))) {
+auto visit(Visitor&& visitor, Variant&& v) noexcept(detail::IsNoExcept<Visitor, Variant>()) -> decltype(visitor(get<0>(std::forward<Variant>(v)))) {
     static constexpr auto UseLookupVisitor = true;
-    return VisitHelper<Visitor, Variant, UseLookupVisitor>::run(std::forward<Visitor>(visitor), std::forward<Variant>(v));
+    return VisitHelper<Visitor, Variant, detail::IsNoExcept<Visitor, Variant>(), UseLookupVisitor>::run(std::forward<Visitor>(visitor), std::forward<Variant>(v));
 }
 
 template <typename... Ts>

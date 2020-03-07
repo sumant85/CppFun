@@ -29,6 +29,59 @@ struct NonDefaultConstructible {
     
     int a;
 };
+
+struct MoveThrows {
+    MoveThrows() = default;
+    MoveThrows(const MoveThrows&) = default;
+    MoveThrows(MoveThrows&&) noexcept(false);
+    
+    MoveThrows& operator=(const MoveThrows&) = default;
+    MoveThrows& operator=(MoveThrows&&) noexcept(false);
+};
+
+struct CopyThrows {
+    CopyThrows() = default;
+    CopyThrows(const CopyThrows&) noexcept(false);
+    CopyThrows(CopyThrows&&) = default;
+    
+    CopyThrows& operator=(const CopyThrows&) noexcept(false);
+    CopyThrows& operator=(CopyThrows&&) = default;
+};
+
+struct DestrThrows {
+    ~DestrThrows() noexcept(false) { throw 1; }
+};
+}
+
+TEST_CASE("[ArrayVector] static asserts") {
+    using Vec = sh::ArrayVector<std::shared_ptr<bool>, 10>;
+    static_assert(!std::is_trivially_destructible_v<Vec>);
+    static_assert(std::is_nothrow_move_constructible_v<Vec>);
+    static_assert(std::is_nothrow_move_assignable_v<Vec>);
+    static_assert(std::is_nothrow_copy_constructible_v<Vec>);
+    static_assert(std::is_nothrow_copy_assignable_v<Vec>);
+    
+    using Vec1 = sh::ArrayVector<int, 10>;
+    static_assert(std::is_trivially_destructible_v<Vec1>);
+    
+    using Vec2 = sh::ArrayVector<MoveThrows, 10>;
+    static_assert(std::is_trivially_destructible_v<Vec2>);
+    static_assert(!std::is_nothrow_move_constructible_v<Vec2>);
+    static_assert(!std::is_nothrow_move_assignable_v<Vec2>);
+    static_assert(std::is_nothrow_copy_constructible_v<Vec2>);
+    static_assert(std::is_nothrow_copy_assignable_v<Vec2>);
+    
+    using Vec3 = sh::ArrayVector<CopyThrows, 10>;
+    static_assert(std::is_trivially_destructible_v<Vec3>);
+    static_assert(std::is_nothrow_move_constructible_v<Vec3>);
+    static_assert(std::is_nothrow_move_assignable_v<Vec3>);
+    static_assert(!std::is_nothrow_copy_constructible_v<Vec3>);
+    static_assert(!std::is_nothrow_copy_assignable_v<Vec3>);
+    
+    using Vec4 = sh::ArrayVector<DestrThrows, 10>;
+    static_assert(!std::is_trivially_destructible_v<Vec4>);
+    // Terminate on exception in destr to prevent leaks
+    static_assert(std::is_nothrow_destructible_v<Vec4>);
 }
 
 TEST_CASE("[ArrayVector] construction") {
