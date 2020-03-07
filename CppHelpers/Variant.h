@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include <array>
 #include <type_traits>
 #include <utility>
 
@@ -315,7 +314,7 @@ struct VisitHelper {
     static decltype(auto) run(Visitor&& visitor, Variant&& v, std::index_sequence<Idx ...>) {
         using RetType = decltype(visitor(get<0>(std::forward<Variant>(v))));
         using VisitFn = RetType (*)(Visitor&&, Variant&&) noexcept(NoExcept);
-        static const std::array<VisitFn, sizeof...(Idx)> lookup = {
+        static const VisitFn lookup[sizeof...(Idx)] = {
             [](Visitor&& visitor, Variant&& v) noexcept(NoExcept) -> RetType {
                 return visitor(std::forward<Variant>(v).template getAt<Idx>());
             }...,
